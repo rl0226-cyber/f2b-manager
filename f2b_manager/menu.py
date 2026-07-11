@@ -194,6 +194,55 @@ def _compare_versions(a: str, b: str) -> int:
         return (pa > pb) - (pa < pb)
 
 
+def _check_pkg_update(package: str) -> tuple[str, bool]:
+    """通过包管理器检查软件包是否有可用更新。
+
+    Returns:
+        (available_version, has_update)
+    """
+    try:
+        # APT (Debian/Ubuntu)
+        r = subprocess.run(
+            ["apt-cache", "policy", package],
+            capture_output=True, text=True, timeout=10,
+        )
+        if r.returncode == 0:
+            installed = ""
+            candidate = ""
+            for line in r.stdout.splitlines():
+                line = line.strip()
+                if line.startswith("Installed:"):
+                    installed = line.split(":", 1)[1].strip()
+                    if installed == "(none)":
+                        installed = ""
+                elif line.startswith("Candidate:"):
+                    candidate = line.split(":", 1)[1].strip()
+            if installed and candidate and installed != candidate:
+                # 去掉 epoch 前缀（如 1:1.1.0-1 → 1.1.0-1）
+                installed = installed.split(":", 1)[-1] if ":" in installed else installed
+                candidate = candidate.split(":", 1)[-1] if ":" in candidate else candidate
+                return candidate, _compare_versions(installed, candidate) < 0
+            return candidate, False
+    except Exception:
+        pass
+
+    try:
+        # DNF (CentOS/RHEL/Rocky/Fedora)
+        r = subprocess.run(
+            ["dnf", "list", "available", package],
+            capture_output=True, text=True, timeout=10,
+        )
+        if r.returncode == 0:
+            for line in r.stdout.splitlines():
+                parts = line.split()
+                if len(parts) >= 2 and parts[0].startswith(package):
+                    return parts[1], True
+    except Exception:
+        pass
+
+    return "", False
+
+
 class InteractiveMenu:
     """交互式管理菜单。
 
@@ -208,6 +257,11 @@ class InteractiveMenu:
         self._f2b_installer = None
         self._latest_version = ""
         self._has_update = False
+        # fail2ban 状态（安装检查 + 版本）
+        self._f2b_installed: Optional[bool] = None
+        self._f2b_version: str = ""
+        self._f2b_latest: str = ""
+        self._f2b_has_update: bool = False
 
     # ── 主循环 ────────────────────────────────────
 
@@ -220,8 +274,11 @@ class InteractiveMenu:
         # 初始化 fail2ban 模块
         self._init_modules()
 
-        # 检查更新（后台异步）
+        # 检查 f2b-manager 更新
         self._latest_version, self._has_update = _check_update()
+
+        # 检查 fail2ban 状态和版本
+        self._check_fail2ban_status()
 
         while True:
             _clear_screen()
@@ -275,6 +332,47 @@ class InteractiveMenu:
 
     def _init_modules(self) -> None:
         """延迟初始化 fail2ban 相关模块"""
+        # Fail2banManager（无需 config 参数）
+        try:
+            from .fail2ban.manager import Fail2banManager
+            self._f2b_manager = Fail2banManager()
+        except ImportError:
+            self._f2b_manager = None
+
+        # Fail2banInstaller（需要 Fail2banConfig）
+        try:
+            from .fail2ban.installer import Fail2banInstaller
+            self._f2b_installer = Fail2banInstaller(self._config.fail2ban)
+        except ImportError:
+            self._f2b_installer = None
+
+    def _check_fail2ban_status(self) -> None:
+        """检查 fail2ban 安装状态、版本和可用更新"""
+        # 1. 是否安装
+        try:
+            from shutil import which
+            if which("fail2ban-client"):
+                self._f2b_installed = True
+                try:
+                    result = subprocess.run(
+                        ["fail2ban-client", "version"],
+                        capture_output=True, text=True, timeout=5,
+                    )
+                    if result.returncode == 0:
+                        self._f2b_version = result.stdout.strip().splitlines()[0].strip()
+                except Exception:
+                    self._f2b_version = "?"
+            else:
+                self._f2b_installed = False
+        except Exception:
+            self._f2b_installed = False
+
+        if not self._f2b_installed:
+            return
+
+        # 2. 检查是否有可用更新（通过包管理器）
+        self._f2b_latest, self._f2b_has_update = _check_pkg_update("fail2ban")
+        """延迟初始化 fail2ban 相关模块"""
         try:
             from .fail2ban.manager import Fail2banManager
             self._f2b_manager = Fail2banManager()
@@ -291,16 +389,34 @@ class InteractiveMenu:
         """显示主菜单（含版本信息和更新提示）"""
         _print_header("f2b-manager 管理菜单")
 
-        # 版本信息行
-        ver_line = f"  版本: {LOCAL_VERSION}"
+        # ── f2b-manager 版本行 ──
+        ver_line = f"  f2b-manager: {C_GREEN}v{LOCAL_VERSION}{C_RESET}"
         if self._has_update:
             ver_line += (
-                f"  {C_YELLOW}{C_BOLD}🆕 发现新版本: {self._latest_version}"
+                f"  {C_YELLOW}{C_BOLD}🆕 新版本 v{self._latest_version}"
                 f" → 输入 U 更新{C_RESET}"
             )
         elif self._latest_version:
-            ver_line += f"  {C_GREEN}(已是最新){C_RESET}"
+            ver_line += f"  {C_DIM}(已是最新){C_RESET}"
         print(ver_line)
+
+        # ── fail2ban 状态行 ──
+        if self._f2b_installed is None:
+            pass  # 未检测
+        elif self._f2b_installed:
+            f2b_line = f"  fail2ban:    {C_GREEN}已安装{C_RESET}"
+            if self._f2b_version:
+                f2b_line += f"  v{self._f2b_version}"
+            if self._f2b_has_update and self._f2b_latest:
+                f2b_line += (
+                    f"  {C_YELLOW}{C_BOLD}🆕 可升级至 {self._f2b_latest}"
+                    f" → 选 [3] 更新{C_RESET}"
+                )
+            else:
+                f2b_line += f"  {C_DIM}(已是最新){C_RESET}"
+            print(f2b_line)
+        else:
+            print(f"  fail2ban:    {C_RED}未安装{C_RESET}  → 选 [1] 安装")
         print()
 
         menu_items = [

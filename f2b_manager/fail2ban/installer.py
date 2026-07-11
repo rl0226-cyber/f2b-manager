@@ -233,6 +233,11 @@ class Fail2banInstaller:
         details.append(f"发行版: {distro.distro.value} ({distro.version})")
         details.append(f"包管理器: {distro.package_manager.value}")
 
+        # APT 需要先 update 刷新索引
+        if distro.package_manager == PackageManager.APT:
+            _logger.info("刷新 APT 索引: apt-get update")
+            run_command("apt-get update", timeout=120, check=False)
+
         result = run_command(install_cmd, timeout=300, check=False)
         if not result.success:
             _logger.error("fail2ban 安装失败: %s", result.stderr)
@@ -416,6 +421,11 @@ class Fail2banInstaller:
         # 步骤3: 执行升级
         upgrade_cmd = get_upgrade_command(distro.package_manager, _PACKAGE_NAME)
         _logger.info("更新 fail2ban: %s", upgrade_cmd)
+
+        # APT 需要先 update 刷新索引
+        if distro.package_manager == PackageManager.APT:
+            _logger.info("刷新 APT 索引: apt-get update")
+            run_command("apt-get update", timeout=120, check=False)
 
         result = run_command(upgrade_cmd, timeout=300, check=False)
         if not result.success:

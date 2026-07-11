@@ -102,7 +102,7 @@ def _detect_by_command() -> DistroInfo:
 def get_install_command(pkg_manager: PackageManager, package: str) -> str:
     """获取安装命令"""
     commands = {
-        PackageManager.APT: f"apt-get update && apt-get install -y {package}",
+        PackageManager.APT: f"apt-get install -y {package}",
         PackageManager.DNF: f"dnf install -y {package}",
         PackageManager.YUM: f"yum install -y {package}",
         PackageManager.APK: f"apk add --no-cache {package}",
@@ -126,7 +126,7 @@ def get_remove_command(pkg_manager: PackageManager, package: str) -> str:
 def get_upgrade_command(pkg_manager: PackageManager, package: str) -> str:
     """获取更新命令"""
     commands = {
-        PackageManager.APT: f"apt-get update && apt-get install --only-upgrade -y {package}",
+        PackageManager.APT: f"apt-get install --only-upgrade -y {package}",
         PackageManager.DNF: f"dnf upgrade -y {package}",
         PackageManager.YUM: f"yum update -y {package}",
         PackageManager.APK: f"apk upgrade --no-cache {package}",

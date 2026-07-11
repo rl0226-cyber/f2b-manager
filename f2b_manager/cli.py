@@ -16,10 +16,60 @@ f2b_manager.cli
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 from typing import Optional
 
-from .config import load_config
+from .config import AppConfig, load_config
+
+
+class _CliBotSender:
+    """轻量 Telegram 消息发送器，仅用于 CLI notify 命令。
+
+    直接使用 telegram.Bot(token=...) 调用 Bot API，不引入
+    ApplicationBuilder / polling / job_queue 等额外开销。
+    实现 IMessageSender 协议中 CLI 路径需要的 send_alert 方法。
+    """
+
+    def __init__(self, token: str):
+        from telegram import Bot
+        from telegram.error import Forbidden, NetworkError, TelegramError
+        self._bot = Bot(token=token)
+        self._logger = logging.getLogger("cli.bot_sender")
+        # 保存异常类引用，便于测试 mock
+        self._Forbidden = Forbidden
+        self._NetworkError = NetworkError
+        self._TelegramError = TelegramError
+
+    async def send_alert(self, chat_id: int, message: str,
+                         parse_mode: str = "HTML") -> bool:
+        """发送预警消息到指定 chat_id。
+
+        与 F2BTelegramBot.send_alert() 行为一致：Forbidden 只记 warning，
+        网络/API 错误记 error，统一返回 bool。
+        """
+        try:
+            await self._bot.send_message(
+                chat_id=chat_id,
+                text=message,
+                parse_mode=parse_mode,
+                disable_web_page_preview=True,
+            )
+            return True
+        except self._Forbidden:
+            self._logger.warning("用户 %d 已屏蔽 Bot，无法发送预警", chat_id)
+            return False
+        except self._NetworkError as e:
+            self._logger.error("发送预警消息网络错误: %s", e)
+            return False
+        except self._TelegramError as e:
+            self._logger.error("发送预警消息失败: %s", e)
+            return False
+
+    async def send_report(self, chat_id: int, message: str) -> bool:
+        """CLI 路径不需要 send_report，仅满足 IMessageSender 协议。"""
+        self._logger.debug("send_report 在 CLI 模式下不支持")
+        return False
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -231,8 +281,19 @@ def _cmd_notify(config, args) -> int:
     except Exception as e:
         logger.warning(f"无法初始化状态库: {e}，事件将不记录")
 
-    # 创建 AlertSender（bot 为 None，独立模式仅记录不发送）
-    sender = AlertSender(config=config, bot=None, db=db)
+    # 创建消息发送器：有 bot_token 时构造轻量 _CliBotSender，
+    # 否则保持 None（仅记录不发送，并打印 warning 日志）
+    if config.telegram.bot_token:
+        bot = _CliBotSender(config.telegram.bot_token)
+        logger.info("已构造 Telegram 消息发送器，预警将通过 Bot API 发送")
+    else:
+        bot = None
+        logger.warning(
+            "未配置 telegram.bot_token，预警消息将仅记录到数据库，"
+            "不会发送到 Telegram。请在配置文件中设置 bot_token 以启用实时预警。"
+        )
+
+    sender = AlertSender(config=config, bot=bot, db=db)
 
     try:
         # 根据事件类型分发处理

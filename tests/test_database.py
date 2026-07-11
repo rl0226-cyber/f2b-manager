@@ -189,13 +189,46 @@ class TestCurrentBans:
         assert len(result) == 1
         assert result[0] == ("192.0.2.2", "sshd")
 
-    def test_set_empty_list_clears(self, tmp_db):
-        """设置空列表应清空快照。"""
-        tmp_db.set_current_bans([("192.0.2.1", "sshd"), ("192.0.2.2", "nginx-http-auth")])
-        tmp_db.set_current_bans([])
+    def test_record_ban_syncs_current_bans(self, tmp_db):
+        """record_ban(BAN) 应同步写入 current_bans 表。"""
+        event = BanEvent(
+            ip="203.0.113.1",
+            jail="sshd",
+            action=BanAction.BAN,
+            timestamp=datetime(2026, 7, 11, 14, 30, 0),
+        )
+        tmp_db.record_ban(event)
 
-        result = tmp_db.get_current_bans()
-        assert result == []
+        bans = tmp_db.get_current_bans()
+        assert ("203.0.113.1", "sshd") in bans
+
+    def test_record_unban_removes_from_current_bans(self, tmp_db):
+        """record_ban(UNBAN) 应从 current_bans 表删除对应记录。"""
+        # 先记录一条封禁
+        ban_event = BanEvent(
+            ip="203.0.113.1",
+            jail="sshd",
+            action=BanAction.BAN,
+            timestamp=datetime(2026, 7, 11, 14, 30, 0),
+        )
+        tmp_db.record_ban(ban_event)
+
+        # 确认 current_bans 已包含
+        bans_before = tmp_db.get_current_bans()
+        assert ("203.0.113.1", "sshd") in bans_before
+
+        # 记录解封
+        unban_event = BanEvent(
+            ip="203.0.113.1",
+            jail="sshd",
+            action=BanAction.UNBAN,
+            timestamp=datetime(2026, 7, 11, 15, 0, 0),
+        )
+        tmp_db.record_ban(unban_event)
+
+        # 确认 current_bans 中已删除
+        bans_after = tmp_db.get_current_bans()
+        assert ("203.0.113.1", "sshd") not in bans_after
 
 
 class TestDailyStats:
@@ -203,22 +236,28 @@ class TestDailyStats:
 
     def test_update_and_get_daily_stats(self, tmp_db):
         """写入并查询每日统计。"""
-        tmp_db.update_daily_stats("2026-07-01", 10, 5, "US")
-        tmp_db.update_daily_stats("2026-07-02", 20, 8, "CN")
+        today = datetime.now()
+        date1 = today.strftime("%Y-%m-%d")
+        date2 = (today - timedelta(days=1)).strftime("%Y-%m-%d")
+
+        tmp_db.update_daily_stats(date2, 10, 5, "US")
+        tmp_db.update_daily_stats(date1, 20, 8, "CN")
 
         stats = tmp_db.get_daily_stats(days=10)
         assert len(stats) == 2
 
         # 按日期倒序
-        assert stats[0].date == "2026-07-02"
+        assert stats[0].date == date1
         assert stats[0].total_bans == 20
         assert stats[0].unique_ips == 8
         assert stats[0].top_country == "CN"
 
     def test_upsert_overwrites(self, tmp_db):
         """upsert 行为：同一日期再次写入应更新数据。"""
-        tmp_db.update_daily_stats("2026-07-01", 10, 5, "US")
-        tmp_db.update_daily_stats("2026-07-01", 15, 7, "CN")
+        today_str = datetime.now().strftime("%Y-%m-%d")
+
+        tmp_db.update_daily_stats(today_str, 10, 5, "US")
+        tmp_db.update_daily_stats(today_str, 15, 7, "CN")
 
         stats = tmp_db.get_daily_stats(days=10)
         assert len(stats) == 1

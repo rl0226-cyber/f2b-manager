@@ -98,7 +98,15 @@ class StateDB:
     # ── 封禁历史 ──────────────────────────────
 
     def record_ban(self, event: BanEvent) -> None:
-        """记录封禁/解封事件到历史表"""
+        """记录封禁/解封事件到历史表，并同步更新 current_bans 快照。
+
+        同步 current_bans 是为了避免 CLI 路径已处理的事件被轮询兜底
+        (_poll_ban_changes_job) 重复处理，导致统计数字翻倍。
+
+        - BAN 事件: 写入 ban_history 后，INSERT OR REPLACE 到 current_bans
+        - UNBAN 事件: 写入 ban_history 后，DELETE 从 current_bans 删除
+        """
+        ts = event.timestamp.strftime("%Y-%m-%d %H:%M:%S")
         with self._lock:
             self._conn.execute(
                 """INSERT INTO ban_history
@@ -111,9 +119,23 @@ class StateDB:
                     event.failures,
                     event.country,
                     event.matches[:500],  # 限制长度，避免超大日志
-                    event.timestamp.strftime("%Y-%m-%d %H:%M:%S"),
+                    ts,
                 ),
             )
+
+            # 同步 current_bans 快照，避免轮询兜底重复处理
+            if event.action == BanAction.BAN:
+                self._conn.execute(
+                    """INSERT OR REPLACE INTO current_bans (ip, jail, banned_at)
+                       VALUES (?, ?, ?)""",
+                    (event.ip, event.jail, ts),
+                )
+            elif event.action == BanAction.UNBAN:
+                self._conn.execute(
+                    "DELETE FROM current_bans WHERE ip = ? AND jail = ?",
+                    (event.ip, event.jail),
+                )
+
             self._conn.commit()
 
     def mark_notified(self, event_id: int) -> None:

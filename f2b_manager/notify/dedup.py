@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from typing import Tuple
+from typing import Optional, Tuple
 
 logger = logging.getLogger("notify.dedup")
 

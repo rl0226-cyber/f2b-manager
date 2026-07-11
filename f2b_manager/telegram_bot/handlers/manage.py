@@ -67,10 +67,13 @@ async def _run_with_progress(
     """
     loop = asyncio.get_running_loop()
 
-    # 发送初始进度
-    await message.edit_text(
-        format_progress(initial_text), parse_mode="HTML"
-    )
+    # 发送初始进度（若与已有内容相同则忽略）
+    try:
+        await message.edit_text(
+            format_progress(initial_text), parse_mode="HTML"
+        )
+    except Exception:
+        pass  # 内容未变时 Telegram 返回 400，忽略即可
 
     # 提交到线程池
     task = loop.run_in_executor(None, operation)

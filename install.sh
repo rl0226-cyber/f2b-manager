@@ -139,24 +139,13 @@ install_sys_pkg() {
 }
 
 # ── 自动安装系统依赖 ─────────────────────────────────────
-# python3-venv
-if ! "$PY_BIN" -m venv --help >/dev/null 2>&1; then
-    warn "python3-venv 模块不可用，尝试自动安装..."
-    if install_sys_pkg "python3-venv python3-pip" "python3-virtualenv python3-pip" "py3-virtualenv py3-pip"; then
-        ok "python3-venv 安装成功"
-    else
-        err "python3-venv 安装失败，请手动安装后重试"
-        exit 1
-    fi
-fi
-
-# git
+# git (提前安装，远程模式需要)
 if ! command -v git >/dev/null 2>&1; then
     warn "git 不可用，尝试自动安装..."
     if install_sys_pkg "git" "git" "git"; then
         ok "git 安装成功"
     else
-        warn "git 安装失败，部分功能可能受限（不影响基本安装）"
+        warn "git 安装失败，部分功能可能受限"
     fi
 fi
 
@@ -174,9 +163,37 @@ cp "${SCRIPT_DIR}/pyproject.toml" "${SCRIPT_DIR}/requirements.txt" "${INSTALL_DI
 ok "程序文件已复制"
 
 # ── 4. 创建虚拟环境并安装依赖 ─────────────────────────
-if [ ! -d "$VENV_DIR" ]; then
+# 尝试创建 venv，失败时自动安装 python3-venv 后重试
+create_venv() {
+    "$PY_BIN" -m venv "$VENV_DIR" 2>/dev/null
+}
+
+if [ ! -d "$VENV_DIR" ] || [ ! -f "$VENV_DIR/bin/python" ]; then
+    rm -rf "$VENV_DIR"
     log "创建虚拟环境: $VENV_DIR"
-    "$PY_BIN" -m venv "$VENV_DIR"
+    if create_venv; then
+        ok "虚拟环境创建成功"
+    else
+        # venv 创建失败，通常是缺少 python3-venv / ensurepip
+        warn "虚拟环境创建失败，自动安装 python3-venv..."
+        # 根据版本号确定包名 (如 python3.11-venv)
+        PY_MAJOR_MINOR="$("$PY_BIN" -c 'import sys; print(f"python{sys.version_info[0]}.{sys.version_info[1]}")')"
+        if install_sys_pkg "${PY_MAJOR_MINOR}-venv python3-pip" "python3-virtualenv python3-pip" "py3-virtualenv py3-pip"; then
+            ok "python3-venv 安装成功，重试创建虚拟环境..."
+            rm -rf "$VENV_DIR"
+            if create_venv; then
+                ok "虚拟环境创建成功"
+            else
+                err "虚拟环境创建仍然失败，请手动运行: apt install ${PY_MAJOR_MINOR}-venv"
+                exit 1
+            fi
+        else
+            err "python3-venv 安装失败，请手动安装后重试"
+            echo "  Debian/Ubuntu: apt-get install -y ${PY_MAJOR_MINOR}-venv python3-pip"
+            echo "  CentOS/RHEL:   dnf install -y python3-virtualenv"
+            exit 1
+        fi
+    fi
 else
     log "虚拟环境已存在，复用: $VENV_DIR"
 fi

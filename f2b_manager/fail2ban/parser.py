@@ -219,16 +219,41 @@ def parse_jail_status(raw: str) -> JailStatus:
 def parse_banned_ips(raw: str) -> list[str]:
     """解析 fail2ban-client banned 输出
 
+    支持两种格式:
+    - fail2ban 0.x: 每行一个 IP
+    - fail2ban 1.0+: 结构化格式如 [{'sshd': ['1.2.3.4']}, {'nginx': []}]
+
     Args:
-        raw: fail2ban-client banned 命令的 stdout，
-             每行一个 IP，空输出表示无封禁
+        raw: fail2ban-client banned 命令的 stdout
 
     Returns:
         IP 地址列表
     """
     if not raw or not raw.strip():
         return []
-    return [ip.strip() for ip in raw.strip().splitlines() if ip.strip()]
+
+    raw = raw.strip()
+
+    # fail2ban 1.0+ 输出结构化格式: [{'jail': ['ip1', 'ip2']}, ...]
+    if raw.startswith("["):
+        try:
+            import ast
+            data = ast.literal_eval(raw)
+            ips: list[str] = []
+            for item in data:
+                if isinstance(item, dict):
+                    for jail_ips in item.values():
+                        if isinstance(jail_ips, list):
+                            ips.extend(jail_ips)
+                        elif isinstance(jail_ips, str):
+                            ips.append(jail_ips)
+            return ips
+        except (ValueError, SyntaxError):
+            # 解析失败，回退到逐行处理
+            pass
+
+    # fail2ban 0.x: 每行一个 IP
+    return [ip.strip() for ip in raw.splitlines() if ip.strip()]
 
 
 def parse_jail_list(raw: str) -> list[JailInfo]:

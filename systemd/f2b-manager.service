@@ -1,0 +1,26 @@
+[Unit]
+Description=Fail2ban Manager - Telegram Bot & Monitor
+After=network-online.target fail2ban.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/f2b-manager
+ExecStart=/opt/f2b-manager/venv/bin/python -m f2b_manager
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# 环境变量
+Environment=PYTHONUNBUFFERED=1
+Environment=F2B_CONFIG=/etc/f2b-manager/config.yaml
+
+# 安全加固（保留 fail2ban 管理所需权限）
+NoNewPrivileges=false
+ProtectSystem=false
+
+[Install]
+WantedBy=multi-user.target

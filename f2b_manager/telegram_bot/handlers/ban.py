@@ -126,9 +126,20 @@ async def cmd_unban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     try:
+        # 先查 IP 属于哪个 jail
+        jail = "-"
+        try:
+            for j in deps.f2b_manager.get_jails():
+                js = deps.f2b_manager.get_jail_status(j.name)
+                if ip in js.banned_ips:
+                    jail = j.name
+                    break
+        except Exception:
+            pass  # 查询失败也不影响解封
+
         success = deps.f2b_manager.unban_ip(ip)
         await update.message.reply_text(
-            format_ban_result(ip, "-", success, "解封"),
+            format_ban_result(ip, jail, success, "解封"),
             parse_mode="HTML",
         )
         logger.info(f"手动解封 IP={ip} success={success}")

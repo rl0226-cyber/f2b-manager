@@ -21,7 +21,7 @@ from telegram.ext import ContextTypes
 
 from ..auth import require_admin
 from ..deps import get_deps
-from ..formatters import format_ban_result, format_error, format_not_ready
+from ..formatters import esc, format_ban_result, format_error, format_not_ready
 
 logger = logging.getLogger(__name__)
 

@@ -46,7 +46,7 @@ C_BG_GREEN = "\033[42m"
 _TERM_WIDTH = 70
 
 # GitHub 版本检测
-_REPO_API = "https://api.github.com/repos/rl0226-cyber/f2b-manager/releases/latest"
+_REPO_API = "https://api.github.com/repos/rl0226-cyber/f2b-manager/tags"
 _VERSION_CACHE = "/tmp/f2b-version-check.json"
 _VERSION_CACHE_TTL = 3600  # 1 小时
 
@@ -153,12 +153,19 @@ def _check_update() -> tuple[str, bool]:
     except Exception:
         pass
 
-    # 查询 GitHub API
+    # 查询 GitHub API (tags 列表，按时间倒序，第一个就是最新)
     try:
         resp = httpx.get(_REPO_API, timeout=10, follow_redirects=True)
         if resp.status_code == 200:
             data = resp.json()
-            latest = data.get("tag_name", "").lstrip("v")
+            # tags 端点返回数组 [{name: "v0.1.0", ...}]
+            if isinstance(data, list) and len(data) > 0:
+                latest = data[0].get("name", "").lstrip("v")
+            elif isinstance(data, dict):
+                # 兼容 releases 端点返回
+                latest = data.get("tag_name", "").lstrip("v")
+            else:
+                return "", False
             # 写入缓存
             with open(_VERSION_CACHE, "w") as f:
                 json.dump({"tag": latest, "ts": time.time()}, f)

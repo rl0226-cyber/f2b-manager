@@ -52,8 +52,34 @@ for a in "$@"; do
     esac
 done
 
-# ── 定位脚本所在目录（兼容任意调用路径）──────────────────
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# ── 定位脚本所在目录（兼容 curl|bash 和本地执行）────────
+REPO_URL="https://github.com/rl0226-cyber/f2b-manager.git"
+CLONED=0
+
+# 尝试获取脚本所在目录（本地执行时有效）
+SCRIPT_DIR=""
+if [ -n "${BASH_SOURCE[0]:-}" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+fi
+
+# 如果脚本目录不存在或目录下没有 f2b_manager/，说明是 curl|bash 模式
+# 需要先 git clone 仓库到临时目录
+if [ -z "$SCRIPT_DIR" ] || [ ! -d "${SCRIPT_DIR}/f2b_manager" ]; then
+    log "检测到远程安装模式，正在下载项目代码..."
+    SCRIPT_DIR="/tmp/f2b-manager-install"
+    rm -rf "$SCRIPT_DIR"
+    if command -v git >/dev/null 2>&1; then
+        git clone --depth 1 "$REPO_URL" "$SCRIPT_DIR"
+        CLONED=1
+    else
+        # 无 git 时用 curl 下载 tarball
+        log "未检测到 git，使用 tarball 下载..."
+        curl -fsSL "https://github.com/rl0226-cyber/f2b-manager/archive/refs/heads/main.tar.gz" \
+            | tar xz -C /tmp/
+        mv /tmp/f2b-manager-main "$SCRIPT_DIR"
+    fi
+    ok "项目代码已下载到 $SCRIPT_DIR"
+fi
 
 echo -e "${C_BOLD}=== f2b-manager 安装程序 ===${C_RESET}"
 
@@ -197,5 +223,10 @@ echo -e "启动服务: ${C_YELLOW}systemctl start f2b-manager${C_RESET}"
 echo -e "查看日志: ${C_YELLOW}journalctl -u f2b-manager -f${C_RESET}"
 echo -e "再次打开菜单: ${C_YELLOW}f2b${C_RESET}"
 echo
-echo "如需使用 IP 归属地功能，请运行: sudo bash scripts/geoip-update.sh --setup"
-echo "如需卸载，请运行: sudo bash uninstall.sh"
+echo "如需使用 IP 归属地功能，请运行: f2b 然后选择相关选项"
+echo "如需卸载，请运行: bash /opt/f2b-manager/uninstall.sh"
+
+# ── 清理临时下载目录 ───────────────────────────────────
+if [ "$CLONED" -eq 1 ] && [ -d "$SCRIPT_DIR" ]; then
+    rm -rf "$SCRIPT_DIR"
+fi

@@ -110,11 +110,56 @@ if [ -z "$PY_BIN" ]; then
     exit 1
 fi
 PY_VER="$("$PY_BIN" -c 'import sys; print("%d.%d.%d" % sys.version_info[:3])')"
-# 确保 venv 模块可用
-if ! "$PY_BIN" -m venv --help >/dev/null 2>&1; then
-    err "Python venv 模块不可用，请安装 python3-venv"
-    exit 1
+
+# ── 检测包管理器 ─────────────────────────────────────────
+PKG_MGR=""
+if command -v apt-get >/dev/null 2>&1; then
+    PKG_MGR="apt-get"
+elif command -v dnf >/dev/null 2>&1; then
+    PKG_MGR="dnf"
+elif command -v yum >/dev/null 2>&1; then
+    PKG_MGR="yum"
+elif command -v apk >/dev/null 2>&1; then
+    PKG_MGR="apk"
 fi
+
+# ── 安装系统依赖的函数 ─────────────────────────────────
+install_sys_pkg() {
+    local pkgs_apt="$1" pkgs_dnf="$2" pkgs_apk="$3"
+    if [ -z "$PKG_MGR" ]; then
+        warn "未检测到包管理器，请手动安装: $pkgs_apt"
+        return 1
+    fi
+    log "安装系统依赖: $pkgs_apt (via $PKG_MGR)..."
+    case "$PKG_MGR" in
+        apt-get) apt-get update -qq && apt-get install -y $pkgs_apt ;;
+        dnf|yum) $PKG_MGR install -y $pkgs_dnf ;;
+        apk)     apk add --no-cache $pkgs_apk ;;
+    esac
+}
+
+# ── 自动安装系统依赖 ─────────────────────────────────────
+# python3-venv
+if ! "$PY_BIN" -m venv --help >/dev/null 2>&1; then
+    warn "python3-venv 模块不可用，尝试自动安装..."
+    if install_sys_pkg "python3-venv python3-pip" "python3-virtualenv python3-pip" "py3-virtualenv py3-pip"; then
+        ok "python3-venv 安装成功"
+    else
+        err "python3-venv 安装失败，请手动安装后重试"
+        exit 1
+    fi
+fi
+
+# git
+if ! command -v git >/dev/null 2>&1; then
+    warn "git 不可用，尝试自动安装..."
+    if install_sys_pkg "git" "git" "git"; then
+        ok "git 安装成功"
+    else
+        warn "git 安装失败，部分功能可能受限（不影响基本安装）"
+    fi
+fi
+
 ok "Python 版本检查通过: $PY_VER ($PY_BIN)"
 
 # ── 2. 创建目录 ─────────────────────────────────────────
@@ -149,6 +194,10 @@ cat > "$WRAPPER" <<'EOF'
 # f2b-manager CLI 包装器
 # 设置 PYTHONPATH 使 f2b_manager 包可被导入，再调用主程序
 export PYTHONPATH="/opt/f2b-manager:${PYTHONPATH:-}"
+# 无参数时默认打开管理菜单
+if [ $# -eq 0 ]; then
+    set -- menu
+fi
 exec /opt/f2b-manager/venv/bin/python -m f2b_manager "$@"
 EOF
 chmod 755 "$WRAPPER"
@@ -215,7 +264,7 @@ echo
 
 # ── 启动配置向导 ───────────────────────────────────────
 log "启动配置向导..."
-"$VENV_DIR/bin/python" -m f2b_manager menu || warn "菜单启动失败，可稍后运行 f2b 命令"
+"$WRAPPER" menu || warn "菜单启动失败，可稍后运行 f2b 命令"
 
 echo
 echo -e "${C_GREEN}配置完成！${C_RESET}"

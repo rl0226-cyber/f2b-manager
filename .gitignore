@@ -48,3 +48,4 @@ config.local.yaml
 
 # WorkBuddy 工作记忆
 .workbuddy/
+install修复提示词.md

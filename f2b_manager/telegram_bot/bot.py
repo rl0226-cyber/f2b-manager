@@ -302,6 +302,29 @@ class F2BTelegramBot(IMessageSender):
         me = await app.bot.get_me()
         logger.info(f"Bot 已连接: @{me.username} ({me.first_name})")
 
+        # 注册命令菜单（输入框左侧 / 按钮展开的命令列表）
+        from telegram import BotCommand
+        commands = [
+            BotCommand("status", "查看运行状态"),
+            BotCommand("jails", "查看 Jail 列表"),
+            BotCommand("banned", "查看封禁 IP"),
+            BotCommand("jail", "查看指定 Jail 详情"),
+            BotCommand("ban", "手动封禁 IP"),
+            BotCommand("unban", "解封 IP"),
+            BotCommand("report", "生成报告"),
+            BotCommand("stats", "查看统计"),
+            BotCommand("whitelist", "白名单管理"),
+            BotCommand("setnotify", "开关通知"),
+            BotCommand("setschedule", "设置定时报告"),
+            BotCommand("install", "安装 Fail2ban"),
+            BotCommand("uninstall", "卸载 Fail2ban"),
+            BotCommand("update", "更新 Fail2ban"),
+            BotCommand("reload", "重载配置"),
+            BotCommand("help", "使用帮助"),
+        ]
+        await app.bot.set_my_commands(commands)
+        logger.info(f"已注册 {len(commands)} 条命令菜单")
+
         # 通知管理员 Bot 已上线
         await self._notify_admins_online()
 

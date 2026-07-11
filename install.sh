@@ -177,16 +177,25 @@ else
     err "未找到 scripts/f2b-notify.sh"
 fi
 
+# ── 创建 f2b 快捷指令 ─────────────────────────────────
+log "部署 f2b 快捷指令"
+ln -sf "$WRAPPER" /usr/local/bin/f2b
+ok "快捷指令已创建：输入 f2b 即可启动管理菜单"
+
 # ── 完成 ───────────────────────────────────────────────
 echo
 echo -e "${C_GREEN}${C_BOLD}✅ f2b-manager 安装完成！${C_RESET}"
 echo
-echo -e "${C_BOLD}下一步操作:${C_RESET}"
-echo -e "  1. 编辑配置:   ${C_YELLOW}vim ${CONFIG_DST}${C_RESET}"
-echo "     将 bot_token / admin_chat_ids / notify_chat_id 替换为你的真实值"
-echo -e "  2. 启动服务:   ${C_YELLOW}systemctl start f2b-manager${C_RESET}"
-echo -e "  3. 查看日志:   ${C_YELLOW}journalctl -u f2b-manager -f${C_RESET}"
-echo -e "  4. Telegram 测试: 给 Bot 发送 ${C_YELLOW}/start${C_RESET}"
+
+# ── 启动配置向导 ───────────────────────────────────────
+log "启动配置向导..."
+"$VENV_DIR/bin/python" -m f2b_manager menu || warn "菜单启动失败，可稍后运行 f2b 命令"
+
+echo
+echo -e "${C_GREEN}配置完成！${C_RESET}"
+echo -e "启动服务: ${C_YELLOW}systemctl start f2b-manager${C_RESET}"
+echo -e "查看日志: ${C_YELLOW}journalctl -u f2b-manager -f${C_RESET}"
+echo -e "再次打开菜单: ${C_YELLOW}f2b${C_RESET}"
 echo
 echo "如需使用 IP 归属地功能，请运行: sudo bash scripts/geoip-update.sh --setup"
 echo "如需卸载，请运行: sudo bash uninstall.sh"

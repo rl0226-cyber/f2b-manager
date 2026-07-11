@@ -72,6 +72,9 @@ def build_parser() -> argparse.ArgumentParser:
     # status: 查看状态
     subparsers.add_parser("status", help="查看 fail2ban 状态")
 
+    # menu: 交互式管理菜单
+    subparsers.add_parser("menu", help="交互式管理菜单")
+
     return parser
 
 
@@ -110,6 +113,9 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     if args.command == "status":
         return _cmd_status(config, args)
+
+    if args.command == "menu":
+        return _cmd_menu(config, args)
 
     parser.print_help()
     return 0
@@ -274,6 +280,22 @@ def _cmd_status(config, args) -> int:
             return 1
 
     return 0
+
+
+def _cmd_menu(config, args) -> int:
+    """启动交互式管理菜单"""
+    try:
+        from .menu import InteractiveMenu
+        menu = InteractiveMenu(config_path=config.config_path or "/etc/f2b-manager/config.yaml")
+        menu.run()
+        return 0
+    except ImportError:
+        logger = __import__("logging").getLogger("menu")
+        logger.error("交互式菜单模块加载失败")
+        return 1
+    except KeyboardInterrupt:
+        print()
+        return 0
 
 
 if __name__ == "__main__":

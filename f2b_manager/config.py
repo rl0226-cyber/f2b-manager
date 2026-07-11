@@ -11,6 +11,7 @@ f2b_manager.config
 from __future__ import annotations
 
 import os
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -198,6 +199,124 @@ class AppConfig:
             errors.append("schedule.health_check_minutes 不能小于 1")
 
         return errors
+
+    def to_dict(self) -> dict[str, Any]:
+        """将配置序列化为 YAML 友好的字典（仅写入非默认值的关键字段）"""
+        # Telegram
+        telegram_dict: dict[str, Any] = {
+            "bot_token": self.telegram.bot_token,
+            "admin_chat_ids": self.telegram.admin_chat_ids,
+            "operator_chat_ids": self.telegram.operator_chat_ids,
+            "notify_chat_id": self.telegram.notify_chat_id,
+            "mode": self.telegram.mode,
+        }
+        if self.telegram.mode == "webhook":
+            telegram_dict["webhook"] = {
+                "url": self.telegram.webhook_url,
+                "port": self.telegram.webhook_port,
+            }
+        telegram_dict["rate_limit"] = {
+            "max_messages_per_minute": self.telegram.max_messages_per_minute,
+            "cooldown_on_burst": self.telegram.cooldown_on_burst,
+        }
+
+        # Fail2ban
+        fail2ban_dict: dict[str, Any] = {
+            "default_bantime": self.fail2ban.default_bantime,
+            "default_findtime": self.fail2ban.default_findtime,
+            "default_maxretry": self.fail2ban.default_maxretry,
+            "incremental": self.fail2ban.incremental,
+            "max_bantime": self.fail2ban.max_bantime,
+            "ignoreip": self.fail2ban.ignoreip,
+            "enabled_jails": self.fail2ban.enabled_jails,
+        }
+
+        # Schedule
+        schedule_dict: dict[str, Any] = {
+            "daily_report": {
+                "enabled": self.schedule.daily_report_enabled,
+                "time": self.schedule.daily_report_time,
+            },
+            "weekly_report": {
+                "enabled": self.schedule.weekly_report_enabled,
+                "day": self.schedule.weekly_report_day,
+                "time": self.schedule.weekly_report_time,
+            },
+            "poll_interval_minutes": self.schedule.poll_interval_minutes,
+            "health_check_minutes": self.schedule.health_check_minutes,
+        }
+
+        # Notify
+        notify_dict: dict[str, Any] = {
+            "enable_ban_alert": self.notify.enable_ban_alert,
+            "enable_unban_alert": self.notify.enable_unban_alert,
+            "enable_service_alert": self.notify.enable_service_alert,
+            "enable_health_alert": self.notify.enable_health_alert,
+            "geoip": {
+                "enabled": self.notify.geoip_enabled,
+                "method": self.notify.geoip_method,
+                "db_path": self.notify.geoip_db_path,
+            },
+            "dedup_window_seconds": self.notify.dedup_window_seconds,
+        }
+
+        # Logging
+        logging_dict: dict[str, Any] = {
+            "level": self.logging.level,
+            "file": self.logging.file,
+            "max_size_mb": self.logging.max_size_mb,
+            "backup_count": self.logging.backup_count,
+        }
+
+        # Database
+        database_dict: dict[str, Any] = {
+            "path": self.database.path,
+        }
+
+        return {
+            "telegram": telegram_dict,
+            "fail2ban": fail2ban_dict,
+            "schedule": schedule_dict,
+            "notify": notify_dict,
+            "logging": logging_dict,
+            "database": database_dict,
+        }
+
+
+def save_config(config: AppConfig, config_path: str) -> None:
+    """将配置写回 YAML 文件（保留可读格式）
+
+    - 序列化 AppConfig 为 YAML 字典
+    - 如果文件已存在，先备份为 config.yaml.bak
+    - 写入后设置文件权限 600
+    """
+    path = Path(config_path)
+
+    # 备份旧文件
+    if path.exists():
+        backup_path = Path(str(path) + ".bak")
+        shutil.copy2(path, backup_path)
+
+    # 确保父目录存在
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    # 序列化并写入
+    data = config.to_dict()
+    yaml_content = yaml.dump(
+        data,
+        default_flow_style=False,
+        allow_unicode=True,
+        sort_keys=False,
+        indent=2,
+    )
+
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("# f2b-manager 配置文件\n")
+        f.write("# 部署后路径: /etc/f2b-manager/config.yaml (权限 600)\n\n")
+        f.write(yaml_content)
+
+    # 设置权限 600
+    path.chmod(0o600)
 
 
 def load_config(config_path: Optional[str] = None) -> AppConfig:

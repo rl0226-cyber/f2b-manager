@@ -21,6 +21,7 @@ from telegram.error import Forbidden, NetworkError, TelegramError
 from telegram.ext import (
     Application,
     ApplicationBuilder,
+    CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
 )
@@ -38,7 +39,7 @@ from .auth import AuthManager
 from .deps import BotDeps
 from .formatters import format_error, format_help, format_welcome
 from .handlers.ban import cmd_ban, cmd_unban
-from .handlers.config import cmd_setnotify, cmd_setschedule, cmd_whitelist
+from .handlers.config import cmd_setnotify, cmd_setschedule, cmd_whitelist, handle_schedule_callback
 from .handlers.manage import (
     cmd_cancel,
     cmd_install,
@@ -157,6 +158,9 @@ class F2BTelegramBot(IMessageSender):
         app.add_handler(CommandHandler("whitelist", cmd_whitelist))
         app.add_handler(CommandHandler("setnotify", cmd_setnotify))
         app.add_handler(CommandHandler("setschedule", cmd_setschedule))
+
+        # 回调处理器
+        app.add_handler(CallbackQueryHandler(handle_schedule_callback, pattern=r"^sch_"))
 
         # ── 全局错误处理 ──
         app.add_error_handler(self.error_handler)

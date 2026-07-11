@@ -25,6 +25,10 @@ from telegram.ext import ContextTypes
 from ..auth import require_admin, require_operator
 from ..deps import get_deps
 from ..formatters import esc, format_error, format_success
+from ..keyboards import (
+    CB_SCHEDULE, WEEKDAY_MAP,
+    schedule_main_keyboard, schedule_time_keyboard, schedule_weekday_keyboard,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -225,79 +229,213 @@ async def cmd_setnotify(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 @require_admin
 async def cmd_setschedule(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/setschedule <type> <args> — 设置定时报告频率"""
+    """/setschedule — 定时报告按钮设置面板"""
+    await _show_schedule_panel(update, context)
+
+
+async def handle_schedule_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """处理定时报告设置的所有按钮回调"""
+    query = update.callback_query
+    await query.answer()
+
+    data = query.data or ""
     deps = get_deps(context)
 
-    if not context.args:
-        await _show_schedule(update, deps)
+    if not data.startswith(CB_SCHEDULE):
         return
 
-    schedule_type = context.args[0].lower()
+    action = data[len(CB_SCHEDULE) + 1:]  # 去掉 "sch_"
 
-    if schedule_type == "daily":
-        await _set_daily_schedule(update, context, deps)
-    elif schedule_type == "weekly":
-        await _set_weekly_schedule(update, context, deps)
-    else:
-        await update.message.reply_text(
-            format_error(
-                "用法:\n"
-                "  /setschedule daily <HH:MM>\n"
-                "  /setschedule weekly <day> <HH:MM>\n"
-                "  /setschedule daily on|off\n"
-                "  /setschedule weekly on|off\n\n"
-                f"星期可选: {', '.join(VALID_DAYS)}"
-            ),
-            parse_mode="HTML",
-        )
+    if action == "del":
+        await query.delete_message()
+        return
+
+    if action == "main":
+        await _refresh_panel(query, deps)
+        return
+
+    if action == "tog_d":
+        await _toggle_schedule(query, deps, "daily")
+        return
+
+    if action == "tog_w":
+        await _toggle_schedule(query, deps, "weekly")
+        return
+
+    if action == "timed":
+        await _show_time_picker(query, "daily")
+        return
+
+    if action == "timew":
+        await _show_time_picker(query, "weekly")
+        return
+
+    if action == "dayw":
+        await _show_day_picker(query, deps)
+        return
+
+    # 设置时间: sch_tm_daily:08:00 或 sch_tm_weekly:12:00
+    if action.startswith("tm_"):
+        rest = action[3:]  # "daily:08:00" 或 "weekly:12:00"
+        target, _, time_str = rest.partition(":")
+        await _set_time(query, deps, target, time_str)
+        return
+
+    # 设置星期: sch_dy_monday
+    if action.startswith("dy_"):
+        day = action[3:]
+        await _set_weekday(query, deps, day)
+        return
 
 
-async def _show_schedule(update, deps) -> None:
-    """显示当前定时报告设置"""
-    lines = ["\u23f0 <b>定时报告设置</b>", ""]
+# ── 内部辅助函数 ──────────────────────────────
 
-    # 每日报告
-    daily_enabled = deps.config.schedule.daily_report_enabled
-    daily_time = deps.config.schedule.daily_report_time
+def _read_schedule(deps) -> dict:
+    """读取当前定时报告设置，返回 dict"""
+    cfg = deps.config.schedule
+    result = {
+        "daily_enabled": cfg.daily_report_enabled,
+        "daily_time": cfg.daily_report_time,
+        "weekly_enabled": cfg.weekly_report_enabled,
+        "weekly_day": cfg.weekly_report_day,
+        "weekly_time": cfg.weekly_report_time,
+    }
     if deps.db is not None:
         en = deps.db.get_config_override(KEY_SCHEDULE_DAILY_ENABLED, "")
         if en:
-            daily_enabled = en == "on"
+            result["daily_enabled"] = en == "on"
         tm = deps.db.get_config_override(KEY_SCHEDULE_DAILY_TIME, "")
         if tm:
-            daily_time = tm
-
-    icon = "\u2705" if daily_enabled else "\u274c"
-    lines.append(f"{icon} <b>每日报告:</b> {daily_time}")
-
-    # 每周报告
-    weekly_enabled = deps.config.schedule.weekly_report_enabled
-    weekly_day = deps.config.schedule.weekly_report_day
-    weekly_time = deps.config.schedule.weekly_report_time
-    if deps.db is not None:
+            result["daily_time"] = tm
         en = deps.db.get_config_override(KEY_SCHEDULE_WEEKLY_ENABLED, "")
         if en:
-            weekly_enabled = en == "on"
+            result["weekly_enabled"] = en == "on"
         tm = deps.db.get_config_override(KEY_SCHEDULE_WEEKLY_TIME, "")
         if tm:
-            weekly_time = tm
+            result["weekly_time"] = tm
         dy = deps.db.get_config_override(KEY_SCHEDULE_WEEKLY_DAY, "")
         if dy:
-            weekly_day = dy
+            result["weekly_day"] = dy
+    return result
 
-    icon = "\u2705" if weekly_enabled else "\u274c"
-    lines.append(f"{icon} <b>每周报告:</b> {weekly_day} {weekly_time}")
 
-    lines.append("")
-    lines.append(
-        "用法:\n"
-        "  /setschedule daily &lt;HH:MM&gt;\n"
-        "  /setschedule daily on|off\n"
-        "  /setschedule weekly &lt;day&gt; &lt;HH:MM&gt;\n"
-        "  /setschedule weekly on|off"
+async def _show_schedule_panel(update, context, from_callback: bool = False) -> None:
+    """显示定时报告设置面板（按钮模式）"""
+    deps = get_deps(context)
+    s = _read_schedule(deps)
+
+    text = "⏰ <b>定时报告设置</b>"
+    keyboard = schedule_main_keyboard(
+        daily_enabled=s["daily_enabled"],
+        daily_time=s["daily_time"],
+        weekly_enabled=s["weekly_enabled"],
+        weekly_day=s["weekly_day"],
+        weekly_time=s["weekly_time"],
     )
 
-    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+    if from_callback:
+        query = update.callback_query
+        await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
+    else:
+        await update.message.reply_text(text, reply_markup=keyboard, parse_mode="HTML")
+
+
+async def _refresh_panel(query, deps) -> None:
+    """刷新面板（保持当前菜单）"""
+    s = _read_schedule(deps)
+    text = "⏰ <b>定时报告设置</b>"
+    keyboard = schedule_main_keyboard(
+        daily_enabled=s["daily_enabled"],
+        daily_time=s["daily_time"],
+        weekly_enabled=s["weekly_enabled"],
+        weekly_day=s["weekly_day"],
+        weekly_time=s["weekly_time"],
+    )
+    await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
+
+
+async def _show_time_picker(query, target: str) -> None:
+    """显示时间选择键盘"""
+    label = "每日" if target == "daily" else "每周"
+    text = f"🕐 <b>选择{label}报告时间</b>"
+    keyboard = schedule_time_keyboard(target)
+    await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
+
+
+async def _show_day_picker(query, deps) -> None:
+    """显示星期选择键盘"""
+    s = _read_schedule(deps)
+    text = "📅 <b>选择每周报告星期</b>"
+    keyboard = schedule_weekday_keyboard(s["weekly_day"])
+    await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
+
+
+async def _toggle_schedule(query, deps, target: str) -> None:
+    """切换报告开关"""
+    if deps.db is None:
+        await query.answer("状态库未加载", show_alert=True)
+        return
+
+    if target == "daily":
+        key_en = KEY_SCHEDULE_DAILY_ENABLED
+        label = "每日报告"
+    else:
+        key_en = KEY_SCHEDULE_WEEKLY_ENABLED
+        label = "每周报告"
+
+    current = deps.db.get_config_override(key_en, "")
+    if not current:
+        # 从 config 读默认值
+        cfg = deps.config.schedule
+        current = "on" if (cfg.daily_report_enabled if target == "daily" else cfg.weekly_report_enabled) else "off"
+
+    new_val = "off" if current == "on" else "on"
+    deps.db.set_config_override(key_en, new_val)
+
+    await query.answer(f"{label}已{'开启' if new_val == 'on' else '关闭'}")
+    await _refresh_panel(query, deps)
+
+
+async def _set_time(query, deps, target: str, time_str: str) -> None:
+    """设置报告时间"""
+    if deps.db is None:
+        await query.answer("状态库未加载", show_alert=True)
+        return
+
+    if not _validate_time(time_str):
+        await query.answer(f"无效时间: {time_str}", show_alert=True)
+        return
+
+    if target == "daily":
+        deps.db.set_config_override(KEY_SCHEDULE_DAILY_TIME, time_str)
+        deps.db.set_config_override(KEY_SCHEDULE_DAILY_ENABLED, "on")
+    else:
+        deps.db.set_config_override(KEY_SCHEDULE_WEEKLY_TIME, time_str)
+        deps.db.set_config_override(KEY_SCHEDULE_WEEKLY_ENABLED, "on")
+
+    await query.answer(f"{'每日' if target == 'daily' else '每周'}报告时间已设为 {time_str}")
+    await _refresh_panel(query, deps)
+
+
+async def _set_weekday(query, deps, day: str) -> None:
+    """设置每周报告星期"""
+    if deps.db is None:
+        await query.answer("状态库未加载", show_alert=True)
+        return
+
+    if day not in VALID_DAYS:
+        await query.answer(f"无效星期: {day}", show_alert=True)
+        return
+
+    deps.db.set_config_override(KEY_SCHEDULE_WEEKLY_DAY, day)
+    deps.db.set_config_override(KEY_SCHEDULE_WEEKLY_ENABLED, "on")
+
+    for eng, chn in WEEKDAY_MAP:
+        if eng == day:
+            await query.answer(f"每周报告已设为 {chn} " + _read_schedule(deps)["weekly_time"])
+            break
+
+    await _refresh_panel(query, deps)
 
 
 def _validate_time(time_str: str) -> bool:
@@ -310,117 +448,3 @@ def _validate_time(time_str: str) -> bool:
         return 0 <= h <= 23 and 0 <= m <= 59
     except (ValueError, IndexError):
         return False
-
-
-async def _set_daily_schedule(update, context, deps) -> None:
-    """设置每日报告时间"""
-    if len(context.args) < 2:
-        await update.message.reply_text(
-            format_error("用法: /setschedule daily <HH:MM> 或 /setschedule daily on|off"),
-            parse_mode="HTML",
-        )
-        return
-
-    val = context.args[1]
-
-    if val.lower() in ("on", "off"):
-        if deps.db is None:
-            await update.message.reply_text(
-                format_error("状态库未加载"), parse_mode="HTML"
-            )
-            return
-        deps.db.set_config_override(KEY_SCHEDULE_DAILY_ENABLED, val.lower())
-        await update.message.reply_text(
-            format_success(f"每日报告已{'开启' if val.lower() == 'on' else '关闭'}"),
-            parse_mode="HTML",
-        )
-        return
-
-    if not _validate_time(val):
-        await update.message.reply_text(
-            format_error(f"无效的时间格式: {val}\n请使用 HH:MM 格式，如 08:00"),
-            parse_mode="HTML",
-        )
-        return
-
-    if deps.db is None:
-        await update.message.reply_text(
-            format_error("状态库未加载，无法保存设置"), parse_mode="HTML"
-        )
-        return
-
-    deps.db.set_config_override(KEY_SCHEDULE_DAILY_TIME, val)
-    deps.db.set_config_override(KEY_SCHEDULE_DAILY_ENABLED, "on")
-
-    await update.message.reply_text(
-        format_success(f"每日报告已设置为 {val}，已自动开启"),
-        parse_mode="HTML",
-    )
-
-
-async def _set_weekly_schedule(update, context, deps) -> None:
-    """设置每周报告时间"""
-    if len(context.args) < 2:
-        await update.message.reply_text(
-            format_error(
-                "用法: /setschedule weekly <day> <HH:MM> 或 /setschedule weekly on|off"
-            ),
-            parse_mode="HTML",
-        )
-        return
-
-    val = context.args[1]
-
-    if val.lower() in ("on", "off"):
-        if deps.db is None:
-            await update.message.reply_text(
-                format_error("状态库未加载"), parse_mode="HTML"
-            )
-            return
-        deps.db.set_config_override(KEY_SCHEDULE_WEEKLY_ENABLED, val.lower())
-        await update.message.reply_text(
-            format_success(f"每周报告已{'开启' if val.lower() == 'on' else '关闭'}"),
-            parse_mode="HTML",
-        )
-        return
-
-    # 格式: /setschedule weekly monday 08:00
-    if len(context.args) < 3:
-        await update.message.reply_text(
-            format_error("用法: /setschedule weekly <day> <HH:MM>\n"
-                        f"星期可选: {', '.join(VALID_DAYS)}"),
-            parse_mode="HTML",
-        )
-        return
-
-    day = val.lower()
-    time_str = context.args[2]
-
-    if day not in VALID_DAYS:
-        await update.message.reply_text(
-            format_error(f"无效的星期: {day}\n可选: {', '.join(VALID_DAYS)}"),
-            parse_mode="HTML",
-        )
-        return
-
-    if not _validate_time(time_str):
-        await update.message.reply_text(
-            format_error(f"无效的时间格式: {time_str}\n请使用 HH:MM 格式，如 08:00"),
-            parse_mode="HTML",
-        )
-        return
-
-    if deps.db is None:
-        await update.message.reply_text(
-            format_error("状态库未加载，无法保存设置"), parse_mode="HTML"
-        )
-        return
-
-    deps.db.set_config_override(KEY_SCHEDULE_WEEKLY_DAY, day)
-    deps.db.set_config_override(KEY_SCHEDULE_WEEKLY_TIME, time_str)
-    deps.db.set_config_override(KEY_SCHEDULE_WEEKLY_ENABLED, "on")
-
-    await update.message.reply_text(
-        format_success(f"每周报告已设置为 {day} {time_str}，已自动开启"),
-        parse_mode="HTML",
-    )

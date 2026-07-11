@@ -68,7 +68,7 @@ class Application:
         try:
             from .fail2ban.manager import Fail2banManager
             from .fail2ban.installer import Fail2banInstaller
-            self._f2b_manager = Fail2banManager(self.config)
+            self._f2b_manager = Fail2banManager()
             self._f2b_installer = Fail2banInstaller(self.config)
             self.logger.info("Fail2ban 管理模块已加载")
         except ImportError:

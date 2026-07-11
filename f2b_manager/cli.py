@@ -262,7 +262,7 @@ def _cmd_status(config, args) -> int:
 
     try:
         from .fail2ban.manager import Fail2banManager
-        manager = Fail2banManager(config)
+        manager = Fail2banManager()
         status = manager.get_status()
         print(f"版本: {status.version}")
         print(f"状态: {status.state.value}")

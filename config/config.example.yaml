@@ -1,0 +1,85 @@
+# f2b-manager 配置文件
+# 部署后路径: /etc/f2b-manager/config.yaml (权限 600)
+
+# ── Telegram 配置 ──────────────────────────
+telegram:
+  # Bot Token (从 @BotFather 获取)
+  bot_token: "YOUR_BOT_TOKEN_HERE"
+
+  # 权限分级
+  admin_chat_ids: [123456789]        # 管理员（全权限）
+  operator_chat_ids: []               # 操作员（查询 + 通知开关）
+
+  # 预警和报告发送目标 chat_id
+  notify_chat_id: 123456789
+
+  # 运行模式: polling (推荐) | webhook
+  mode: polling
+  webhook:
+    url: ""
+    port: 8443
+
+  # 消息限流（防止刷屏）
+  rate_limit:
+    max_messages_per_minute: 20
+    cooldown_on_burst: 60             # 突发后冷却秒数
+
+# ── Fail2ban 配置 ──────────────────────────
+fail2ban:
+  default_bantime: "1h"
+  default_findtime: "10m"
+  default_maxretry: 5
+
+  # 递增封禁（重复违规封更久）
+  incremental: true
+  max_bantime: "1w"
+
+  # 白名单 IP
+  ignoreip:
+    - "127.0.0.1/8"
+    - "::1"
+
+  # 启用的 jail
+  enabled_jails:
+    - sshd
+    # - nginx-http-auth
+    # - nginx-noscript
+
+# ── 定时任务 ────────────────────────────────
+schedule:
+  daily_report:
+    enabled: true
+    time: "08:00"
+  weekly_report:
+    enabled: true
+    day: "monday"                     # monday/tuesday/.../sunday
+    time: "08:00"
+  poll_interval_minutes: 5            # 轮询兜底间隔
+  health_check_minutes: 10            # 健康检查间隔
+
+# ── 通知设置 ────────────────────────────────
+notify:
+  enable_ban_alert: true              # 封禁时通知
+  enable_unban_alert: false           # 解封默认不通知（太频繁）
+  enable_service_alert: true          # 服务启停通知
+  enable_health_alert: true           # 健康检查告警
+
+  # IP 归属地查询
+  geoip:
+    enabled: true
+    method: local                     # local (mmdb) | api (ip-api.com)
+    db_path: "/var/lib/GeoIP/GeoLite2-Country.mmdb"
+
+  # 突发封禁聚合（同一 IP 短时间多次封禁只通知一次）
+  dedup_window_seconds: 300
+
+# ── 日志 ────────────────────────────────────
+logging:
+  level: INFO                         # DEBUG | INFO | WARNING | ERROR
+  file: "/var/log/f2b-manager.log"
+  max_size_mb: 10
+  backup_count: 5
+
+# ── 状态库 ──────────────────────────────────
+database:
+  path: "/var/lib/f2b-manager/state.db"

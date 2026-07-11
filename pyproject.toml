@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "f2b-manager"
+version = "0.1.0"
+description = "VPS Fail2ban 管理系统 - 集成 Telegram 机器人定时报告与实时预警"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "f2b-manager" }]
+keywords = ["fail2ban", "telegram", "bot", "security", "vps"]
+
+dependencies = [
+    "python-telegram-bot>=21.0",
+    "APScheduler>=3.10",
+    "PyYAML>=6.0",
+    "httpx>=0.27",
+    "maxminddb>=2.5",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+
+[project.scripts]
+f2b-manager = "f2b_manager.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["f2b_manager*"]

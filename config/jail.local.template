@@ -1,0 +1,56 @@
+# f2b-manager jail.local 模板
+# 部署后路径: /etc/fail2ban/jail.local
+#
+# 此文件由 f2b-manager config_builder 自动生成。
+# 变量说明:
+#   ${bantime}       - 封禁时长 (如 1h)
+#   ${findtime}      - 检测窗口 (如 10m)
+#   ${maxretry}      - 最大重试次数
+#   ${ignoreip}      - 白名单 IP (空格分隔)
+#   ${max_bantime}   - 递增封禁最大时长
+#   ${enabled_jails} - 启用的 jail 列表
+#
+# 注意: 每个 jail 的 action 中会自动追加 telegram-notify，
+#       确保 fail2ban 在 ban/unban 时发送 Telegram 通知。
+
+[DEFAULT]
+
+# ── 全局默认配置 ──
+bantime  = ${bantime}
+findtime = ${findtime}
+maxretry = ${maxretry}
+
+# 白名单 IP (不会被封禁)
+ignoreip = ${ignoreip}
+
+# 封禁动作
+banaction = %(banaction)s
+
+# 默认 action 链
+# telegram-notify 会在各 jail 的 action 中单独追加
+action = %(action_)s
+
+# ── 递增封禁（可选）──
+# 若启用: 同一 IP 每次违规封禁时长翻倍
+# bantime.increment = true
+# bantime.rndtime   = 10m
+# bantime.factor    = 2
+# bantime.maxtime   = ${max_bantime}
+
+
+# ── Jail 配置 ─────────────────────────────────
+# 只列出启用的 jail，如需添加自定义 jail 请在下方追加。
+# 每个 jail 都必须追加 telegram-notify action。
+
+${jail_sections}
+
+# ── 自定义 Jail（用户自行添加）────────────────
+# 示例: WordPress 登录保护
+# [wordpress]
+# enabled  = true
+# port     = http,https
+# filter   = wordpress
+# logpath  = /var/log/nginx/access.log
+# maxretry = 3
+# action   = %(action_)s
+#            telegram-notify

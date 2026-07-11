@@ -187,15 +187,19 @@ def _cmd_fail2ban(config, args) -> int:
 
 
 def _cmd_notify(config, args) -> int:
-    """发送通知（供 notify.sh 调用）"""
+    """发送通知（供 notify.sh 调用）
+
+    由 fail2ban action 触发，通过 CLI 子命令将事件转发给守护进程的
+    预警模块处理。此处为独立 CLI 模式（非守护进程），直接创建
+    AlertSender 实例处理事件后退出。
+    """
     logger = __import__("logging").getLogger("notify")
 
-    try:
-        from .notify.sender import AlertSender
-        from .storage.models import BanAction, BanEvent
-    except ImportError:
-        logger.warning("通知模块尚未实现（Wave 2 M3）")
-        return 0
+    import asyncio
+
+    from .notify.sender import AlertSender
+    from .storage.database import StateDB
+    from .storage.models import BanAction, BanEvent
 
     try:
         action = BanAction(args.event)
@@ -211,10 +215,39 @@ def _cmd_notify(config, args) -> int:
         matches=args.matches,
     )
 
-    # 异步发送（后续 Wave 实现）
-    logger.info(f"收到通知事件: {action.value} ip={args.ip} jail={args.jail}")
-    logger.info("通知模块将在 Wave 2 M3 实现")
-    return 0
+    logger.info(f"收到通知事件: {action.value} ip={args.ip} jail={args.jail} "
+                f"failures={args.failures}")
+
+    # 初始化状态库（用于记录事件）
+    db = None
+    try:
+        db = StateDB(db_path=config.database.path)
+    except Exception as e:
+        logger.warning(f"无法初始化状态库: {e}，事件将不记录")
+
+    # 创建 AlertSender（bot 为 None，独立模式仅记录不发送）
+    sender = AlertSender(config=config, bot=None, db=db)
+
+    try:
+        # 根据事件类型分发处理
+        if action in (BanAction.BAN, BanAction.UNBAN):
+            result = asyncio.run(sender.send_ban_alert(event))
+        elif action in (BanAction.START, BanAction.STOP):
+            result = asyncio.run(
+                sender.send_service_alert(action, jail=args.jail)
+            )
+        else:
+            logger.error(f"不支持的事件类型: {action}")
+            result = False
+    except Exception as e:
+        logger.error(f"处理通知事件失败: {e}", exc_info=True)
+        result = False
+    finally:
+        sender.close()
+        if db is not None:
+            db.close()
+
+    return 0 if result else 1
 
 
 def _cmd_status(config, args) -> int:

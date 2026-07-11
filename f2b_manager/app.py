@@ -81,6 +81,7 @@ class Application:
                 config=self.config,
                 f2b_manager=self._f2b_manager,
                 db=self.db,
+                installer=self._f2b_installer,
             )
             self.logger.info("Telegram Bot 模块已加载")
         except ImportError:
@@ -115,19 +116,22 @@ class Application:
         self.logger.info("初始化完成")
 
     def run(self) -> None:
-        """启动主循环"""
+        """启动主循环
+
+        M4 阶段：在同一事件循环中启动 Scheduler + Bot。
+        AsyncIOScheduler 与 python-telegram-bot Application 共享事件循环，
+        确保定时任务和 Bot 消息处理不冲突。
+        """
         self.setup()
         self._running = True
 
         self.logger.info("f2b-manager 守护进程已启动")
         self.logger.info(f"配置文件: {self.config.config_path}")
 
-        # Wave 2+ 实现：启动 Bot + Scheduler 的异步事件循环
-        # 当前 M0 阶段：保持进程运行，等待子模块实现
         try:
             if self._bot is not None and hasattr(self._bot, "run"):
-                # M2 实现后：Bot 的 run() 会启动事件循环 + scheduler
-                asyncio.run(self._bot.run())
+                # M4: 启动 Scheduler + Bot 共享事件循环
+                asyncio.run(self._main_loop())
             else:
                 # M0 阶段：占位运行
                 self.logger.info("M0 基础设施已就绪，等待 Wave 2 模块实现")
@@ -142,6 +146,27 @@ class Application:
             self.logger.info("收到中断信号")
         finally:
             self.shutdown()
+
+    async def _main_loop(self) -> None:
+        """主循环协程：在同一事件循环中启动 Scheduler 和 Bot。
+
+        关键设计：
+        - asyncio.run() 创建事件循环后进入此协程
+        - scheduler.start() 在此协程内调用，确保与 Bot 共享同一事件循环
+        - Bot.run() 阻塞直到收到停止信号（SIGINT/SIGTERM）
+        """
+        # 启动定时任务调度器（必须在 Bot 启动前，事件循环运行后）
+        if self._scheduler:
+            try:
+                self._scheduler.setup_jobs()
+                self._scheduler.start()
+                self.logger.info("定时任务调度器已在主事件循环中启动")
+            except Exception as e:
+                self.logger.error(f"启动调度器失败: {e}")
+
+        # 启动 Telegram Bot（阻塞直到收到停止信号）
+        if self._bot is not None and hasattr(self._bot, "run"):
+            await self._bot.run()
 
     def shutdown(self) -> None:
         """清理资源"""

@@ -56,16 +56,16 @@ else
     exit 0
 fi
 
-# ── 转发事件（后台异步） ──────────────────
-# 使用 nohup + 后台执行，确保不阻塞 fail2ban
-# 超时 30 秒，防止网络问题导致僵尸进程堆积
-nohup timeout 30 $F2B_MANAGER notify \
+# ── 转发事件（同步调用） ──────────────────
+# 同步执行，30 秒超时保护
+# 输出重定向到 /dev/null，避免污染 fail2ban 日志
+timeout 30 $F2B_MANAGER notify \
     --event "$EVENT" \
     --ip "$IP" \
     --jail "$JAIL" \
     --failures "$FAILURES" \
     --matches "$MATCHES" \
-    >/dev/null 2>&1 &
+    >/dev/null 2>&1 || true
 
 # 永远返回 0
 exit 0

@@ -242,6 +242,31 @@ else
     fi
 fi
 
+# ── 7a. 部署 telegram-notify action（不管 fail2ban 是否预装都要部署）──
+log "部署 telegram-notify action 配置"
+if [ -d /etc/fail2ban/action.d ]; then
+    if [ -f "${SCRIPT_DIR}/config/telegram-notify.conf" ]; then
+        cp "${SCRIPT_DIR}/config/telegram-notify.conf" /etc/fail2ban/action.d/
+        chmod 644 /etc/fail2ban/action.d/telegram-notify.conf
+        ok "telegram-notify action 已部署"
+
+        # 如果 jail.local 存在但没有 telegram-notify，追加该 action
+        if [ -f /etc/fail2ban/jail.local ] && ! grep -q 'telegram-notify' /etc/fail2ban/jail.local; then
+            warn "jail.local 中未配置 telegram-notify action，正在追加..."
+            # 在 sshd section 中添加 action 行
+            sed -i '/^\[sshd\]/a\action = %(action_)s\n         telegram-notify' /etc/fail2ban/jail.local
+            if command -v fail2ban-client >/dev/null 2>&1; then
+                fail2ban-client reload 2>/dev/null || warn "fail2ban reload 失败，请手动执行: fail2ban-client reload"
+            fi
+            ok "jail.local 已更新，fail2ban 已重载"
+        fi
+    else
+        err "未找到 config/telegram-notify.conf"
+    fi
+else
+    warn "未检测到 /etc/fail2ban/action.d 目录，跳过 action 部署"
+fi
+
 # ── 8. 部署 systemd 服务 ───────────────────────────────
 log "部署 systemd 服务"
 if [ -f "${SCRIPT_DIR}/${SERVICE_SRC_REL}" ]; then

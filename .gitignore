@@ -39,3 +39,12 @@ Thumbs.db
 config.yaml
 config.local.yaml
 *.secret
+
+# 内部文档（仅本地使用，不上传 GitHub）
+设计方案.md
+模块拆分方案.md
+执行提示词.md
+交互菜单修改计划.md
+
+# WorkBuddy 工作记忆
+.workbuddy/

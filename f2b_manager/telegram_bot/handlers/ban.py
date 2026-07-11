@@ -86,6 +86,23 @@ async def cmd_ban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         jail = args[1].strip()
 
     try:
+        # 先检查是否已被封禁
+        already_banned = False
+        try:
+            for j in deps.f2b_manager.get_jails():
+                js = deps.f2b_manager.get_jail_status(j.name)
+                if ip in js.banned_ips:
+                    already_banned = True
+                    await update.message.reply_text(
+                        f"\u26a0\ufe0f <b>IP 已被封禁</b>\n\n"
+                        f"<code>{esc(ip)}</code> 已在 jail <b>{esc(j.name)}</b> "
+                        f"的封禁列表中。",
+                        parse_mode="HTML",
+                    )
+                    return
+        except Exception:
+            pass
+
         success = deps.f2b_manager.ban_ip(ip, jail)
         await update.message.reply_text(
             format_ban_result(ip, jail, success, "封禁"),
@@ -126,8 +143,8 @@ async def cmd_unban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     try:
-        # 先查 IP 属于哪个 jail
-        jail = "-"
+        # 先查 IP 是否已被封禁及所属 jail
+        jail = None
         try:
             for j in deps.f2b_manager.get_jails():
                 js = deps.f2b_manager.get_jail_status(j.name)
@@ -135,14 +152,23 @@ async def cmd_unban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                     jail = j.name
                     break
         except Exception:
-            pass  # 查询失败也不影响解封
+            pass
+
+        if jail is None:
+            await update.message.reply_text(
+                f"\u26a0\ufe0f <b>IP 未封禁</b>\n\n"
+                f"<code>{esc(ip)}</code> 不在任何 jail 的封禁列表中，"
+                f"无需解封。",
+                parse_mode="HTML",
+            )
+            return
 
         success = deps.f2b_manager.unban_ip(ip)
         await update.message.reply_text(
             format_ban_result(ip, jail, success, "解封"),
             parse_mode="HTML",
         )
-        logger.info(f"手动解封 IP={ip} success={success}")
+        logger.info(f"手动解封 IP={ip} jail={jail} success={success}")
     except Exception as e:
         logger.exception(f"解封 IP {ip} 失败")
         await update.message.reply_text(

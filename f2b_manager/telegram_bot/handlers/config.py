@@ -291,9 +291,9 @@ async def _show_schedule(update, deps) -> None:
     lines.append("")
     lines.append(
         "用法:\n"
-        "  /setschedule daily <HH:MM>\n"
+        "  /setschedule daily &lt;HH:MM&gt;\n"
         "  /setschedule daily on|off\n"
-        "  /setschedule weekly <day> <HH:MM>\n"
+        "  /setschedule weekly &lt;day&gt; &lt;HH:MM&gt;\n"
         "  /setschedule weekly on|off"
     )
 

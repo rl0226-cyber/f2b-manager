@@ -168,7 +168,7 @@ create_venv() {
     "$PY_BIN" -m venv "$VENV_DIR" 2>/dev/null
 }
 
-if [ ! -d "$VENV_DIR" ] || [ ! -f "$VENV_DIR/bin/python" ]; then
+if [ ! -d "$VENV_DIR" ] || [ ! -f "$VENV_DIR/bin/pip" ]; then
     rm -rf "$VENV_DIR"
     log "创建虚拟环境: $VENV_DIR"
     if create_venv; then

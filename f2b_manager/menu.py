@@ -17,11 +17,17 @@ IP 封禁管理、服务控制、日志查看等全部功能。
 from __future__ import annotations
 
 import ipaddress
+import json
 import os
 import re
+import subprocess
 import sys
 import time
 from typing import Optional
+
+import httpx
+
+from . import __version__ as LOCAL_VERSION
 
 # ── ANSI 颜色码 ──────────────────────────────────────
 C_RESET = "\033[0m"
@@ -39,6 +45,11 @@ C_BG_GREEN = "\033[42m"
 # 终端宽度
 _TERM_WIDTH = 70
 
+# GitHub 版本检测
+_REPO_API = "https://api.github.com/repos/rl0226-cyber/f2b-manager/releases/latest"
+_VERSION_CACHE = "/tmp/f2b-version-check.json"
+_VERSION_CACHE_TTL = 3600  # 1 小时
+
 
 def _print_separator(char: str = "─", color: str = C_DIM) -> None:
     """打印分隔线"""
@@ -49,53 +60,44 @@ def _print_header(title: str) -> None:
     """打印青色标题栏"""
     print()
     _print_separator("═", C_CYAN)
-    print(f"  {C_CYAN}{C_BOLD}{title}{C_RESET}")
+    # 居中显示标题 + 版本号
+    pad = max(0, (_TERM_WIDTH - len(title)) // 2)
+    print(f"{C_CYAN}{' ' * pad}{C_BOLD}{title}{C_RESET}")
     _print_separator("═", C_CYAN)
     print()
 
 
 def _print_success(msg: str) -> None:
-    """打印绿色成功消息"""
+    """打印成功消息"""
     print(f"  {C_GREEN}✓ {msg}{C_RESET}")
 
 
 def _print_error(msg: str) -> None:
-    """打印红色错误消息"""
+    """打印错误消息"""
     print(f"  {C_RED}✗ {msg}{C_RESET}")
 
 
 def _print_warning(msg: str) -> None:
-    """打印黄色警告消息"""
+    """打印警告消息"""
     print(f"  {C_YELLOW}⚠ {msg}{C_RESET}")
 
 
 def _print_info(msg: str) -> None:
-    """打印蓝色提示消息"""
-    print(f"  {C_BLUE}ℹ {msg}{C_RESET}")
+    """打印信息消息"""
+    print(f"  {C_CYAN}ℹ {msg}{C_RESET}")
 
 
-def _print_progress(msg: str) -> None:
-    """打印进行中消息"""
-    print(f"  {C_CYAN}⏳ {msg}...{C_RESET}", end="", flush=True)
-
-
-def _print_done() -> None:
-    """完成标记"""
-    print(f"\r  {C_GREEN}✓ 完成{C_RESET}" + " " * 20)
+def _clear_screen() -> None:
+    """清屏"""
+    print("\033[2J\033[H", end="")
 
 
 def _read_input(prompt: str, default: str = "") -> str:
-    """读取用户输入（带青色提示前缀）"""
+    """读取用户输入，空输入返回默认值"""
     if default:
-        display_prompt = f"  {prompt} [{default}]: "
-    else:
-        display_prompt = f"  {prompt}: "
-    try:
-        value = input(display_prompt).strip()
-        return value if value else default
-    except (EOFError, KeyboardInterrupt):
-        print()
-        return ""
+        raw = input(f"  {prompt} [{default}]: ")
+        return raw if raw.strip() else default
+    return input(f"  {prompt}: ")
 
 
 def _read_choice(prompt: str, choices: list[str], default: int = 0) -> int:
@@ -108,6 +110,11 @@ def _read_choice(prompt: str, choices: list[str], default: int = 0) -> int:
         raw = _read_input(prompt).strip()
         if not raw:
             return default
+        # 支持字母快捷键（如 U → 更新）
+        raw_upper = raw.upper()
+        for i, c in enumerate(choices):
+            if c == raw or (c.isalpha() and c == raw_upper):
+                return i
         try:
             num = int(raw)
             if num == 0:
@@ -126,6 +133,60 @@ def _confirm(prompt: str) -> bool:
     return raw in ("y", "yes", "是")
 
 
+def _check_update() -> tuple[str, bool]:
+    """检查 GitHub 是否有新版本。
+
+    Returns:
+        (latest_version, has_update): 最新版本号和是否有更新
+        若检查失败返回 ("", False)
+    """
+    # 先读缓存
+    try:
+        if os.path.exists(_VERSION_CACHE):
+            mtime = os.path.getmtime(_VERSION_CACHE)
+            if time.time() - mtime < _VERSION_CACHE_TTL:
+                with open(_VERSION_CACHE) as f:
+                    data = json.load(f)
+                latest = data.get("tag", "")
+                has = _compare_versions(LOCAL_VERSION, latest) < 0
+                return latest, has
+    except Exception:
+        pass
+
+    # 查询 GitHub API
+    try:
+        resp = httpx.get(_REPO_API, timeout=10, follow_redirects=True)
+        if resp.status_code == 200:
+            data = resp.json()
+            latest = data.get("tag_name", "").lstrip("v")
+            # 写入缓存
+            with open(_VERSION_CACHE, "w") as f:
+                json.dump({"tag": latest, "ts": time.time()}, f)
+            has = _compare_versions(LOCAL_VERSION, latest) < 0
+            return latest, has
+    except Exception:
+        pass
+
+    return "", False
+
+
+def _compare_versions(a: str, b: str) -> int:
+    """比较两个版本号。
+
+    Returns:
+        1  (a > b), -1 (a < b), 0 (相等)
+    """
+    try:
+        from packaging.version import Version
+        return (Version(a) > Version(b)) - (Version(a) < Version(b))
+    except ImportError:
+        # 简易比较：按数字段
+        def _parse(v):
+            return [int(x) for x in re.findall(r"\d+", v)]
+        pa, pb = _parse(a), _parse(b)
+        return (pa > pb) - (pa < pb)
+
+
 class InteractiveMenu:
     """交互式管理菜单。
 
@@ -138,6 +199,8 @@ class InteractiveMenu:
         self._config = None
         self._f2b_manager = None
         self._f2b_installer = None
+        self._latest_version = ""
+        self._has_update = False
 
     # ── 主循环 ────────────────────────────────────
 
@@ -150,23 +213,37 @@ class InteractiveMenu:
         # 初始化 fail2ban 模块
         self._init_modules()
 
+        # 检查更新（后台异步）
+        self._latest_version, self._has_update = _check_update()
+
         while True:
+            _clear_screen()
             self._show_main_menu()
-            # 特殊处理 "0" → 退出（菜单显示 [0] 退出，但 _read_choice 用 1-based）
+            # 特殊处理 "0" → 退出（菜单显示 [0] 退出）
             raw = _read_input("请选择操作").strip()
             if raw == "0":
                 print()
                 print(f"{C_GREEN}  再见！使用 'f2b' 或 'f2b-manager menu' 可再次打开菜单。{C_RESET}")
                 print()
                 break
+
+            raw_upper = raw.upper()
+            # 字母快捷键
+            if raw_upper == "U":
+                self._menu_update_manager()
+                continue
+
             try:
                 idx = int(raw) - 1  # 1-based → 0-based
             except ValueError:
                 _print_error("请输入有效数字")
+                _read_input("按 Enter 继续")
                 continue
             if idx < 0 or idx > 8:
-                _print_error("请输入 0-9 之间的数字")
+                _print_error("请输入 0-9 之间的数字，或 U 更新 f2b-manager")
+                _read_input("按 Enter 继续")
                 continue
+
             choice = idx
             print()
 
@@ -191,14 +268,12 @@ class InteractiveMenu:
 
     def _init_modules(self) -> None:
         """延迟初始化 fail2ban 相关模块"""
-        # Fail2banManager（无需 config 参数）
         try:
             from .fail2ban.manager import Fail2banManager
             self._f2b_manager = Fail2banManager()
         except ImportError:
             self._f2b_manager = None
 
-        # Fail2banInstaller（需要 Fail2banConfig）
         try:
             from .fail2ban.installer import Fail2banInstaller
             self._f2b_installer = Fail2banInstaller(self._config.fail2ban)
@@ -206,8 +281,21 @@ class InteractiveMenu:
             self._f2b_installer = None
 
     def _show_main_menu(self) -> None:
-        """显示主菜单"""
+        """显示主菜单（含版本信息和更新提示）"""
         _print_header("f2b-manager 管理菜单")
+
+        # 版本信息行
+        ver_line = f"  版本: {LOCAL_VERSION}"
+        if self._has_update:
+            ver_line += (
+                f"  {C_YELLOW}{C_BOLD}🆕 发现新版本: {self._latest_version}"
+                f" → 输入 U 更新{C_RESET}"
+            )
+        elif self._latest_version:
+            ver_line += f"  {C_GREEN}(已是最新){C_RESET}"
+        print(ver_line)
+        print()
+
         menu_items = [
             ("1", "安装 Fail2ban", "自动检测发行版并安装 fail2ban"),
             ("2", "卸载 Fail2ban", "停止服务、备份配置并卸载"),
@@ -218,10 +306,12 @@ class InteractiveMenu:
             ("7", "手动封禁 / 解封 IP", "手动添加或移除 IP 封禁"),
             ("8", "启动 / 停止 / 重启服务", "管理 f2b-manager 和 fail2ban 服务"),
             ("9", "查看日志", "查看最近的运行日志"),
+            ("U", "更新 f2b-manager", "更新管理程序到最新版本"),
             ("0", "退出", "退出管理菜单"),
         ]
         for num, title, desc in menu_items:
-            print(f"  {C_BOLD}{C_GREEN}[{num}]{C_RESET} {C_BOLD}{title}{C_RESET}")
+            color = C_YELLOW if num == "U" and self._has_update else C_GREEN
+            print(f"  {C_BOLD}{color}[{num}]{C_RESET} {C_BOLD}{title}{C_RESET}")
             print(f"   {C_DIM}{desc}{C_RESET}")
         print()
 
@@ -229,6 +319,7 @@ class InteractiveMenu:
 
     def _menu_install(self) -> None:
         """安装 Fail2ban"""
+        _clear_screen()
         _print_header("安装 Fail2ban")
 
         if self._f2b_installer is None:
@@ -253,9 +344,9 @@ class InteractiveMenu:
                 _print_error(result.message)
                 if result.details:
                     for d in result.details:
-                        print(f"    {C_RED}• {d}{C_RESET}")
+                        print(f"    {C_DIM}• {d}{C_RESET}")
         except Exception as e:
-            _print_error(f"安装过程发生错误: {e}")
+            _print_error(f"安装过程异常: {e}")
 
         print()
         _read_input("按 Enter 返回主菜单")
@@ -263,28 +354,26 @@ class InteractiveMenu:
     # ── 2. 卸载 Fail2ban ─────────────────────────
 
     def _menu_uninstall(self) -> None:
-        """卸载 Fail2ban（二次确认）"""
+        """卸载 Fail2ban"""
+        _clear_screen()
         _print_header("卸载 Fail2ban")
 
         if self._f2b_installer is None:
-            _print_error("Fail2ban 安装模块未就绪，请确认程序完整安装")
+            _print_error("Fail2ban 安装模块未就绪")
             _read_input("按 Enter 返回")
             return
 
-        print(f"  {C_RED}{C_BOLD}⚠ 此操作将停止 fail2ban 服务并卸载软件包{C_RESET}")
-        print(f"  {C_DIM}  配置文件会备份到 /etc/fail2ban.backup.* 目录{C_RESET}")
-        print()
-
-        if not _confirm("确定要卸载 Fail2ban？"):
-            _print_info("已取消卸载")
+        if not _confirm("确定要卸载 Fail2ban 吗？此操作不可逆"):
+            print(f"  {C_DIM}已取消{C_RESET}")
             _read_input("按 Enter 返回")
             return
 
         print()
-        _print_progress("正在卸载 fail2ban")
+        _print_info("正在卸载 fail2ban，请稍候...")
+        print()
+
         try:
             result = self._f2b_installer.uninstall(keep_config=True)
-            _print_done()
             if result.success:
                 _print_success(result.message)
                 if result.details:
@@ -293,7 +382,7 @@ class InteractiveMenu:
             else:
                 _print_error(result.message)
         except Exception as e:
-            _print_error(f"卸载过程发生错误: {e}")
+            _print_error(f"卸载过程异常: {e}")
 
         print()
         _read_input("按 Enter 返回主菜单")
@@ -302,19 +391,23 @@ class InteractiveMenu:
 
     def _menu_update(self) -> None:
         """更新 Fail2ban"""
+        _clear_screen()
         _print_header("更新 Fail2ban")
 
         if self._f2b_installer is None:
-            _print_error("Fail2ban 安装模块未就绪，请确认程序完整安装")
+            _print_error("Fail2ban 安装模块未就绪")
             _read_input("按 Enter 返回")
             return
 
-        _print_progress("正在更新 fail2ban")
+        _print_info("正在检查并更新 fail2ban...")
+        print()
+
         try:
             result = self._f2b_installer.update()
-            _print_done()
             if result.success:
                 _print_success(result.message)
+                if result.version:
+                    print(f"  {C_GREEN}  版本: {result.version}{C_RESET}")
                 if result.details:
                     for d in result.details:
                         print(f"    {C_DIM}• {d}{C_RESET}")
@@ -322,200 +415,245 @@ class InteractiveMenu:
                 _print_error(result.message)
                 if result.details:
                     for d in result.details:
-                        print(f"    {C_RED}• {d}{C_RESET}")
+                        print(f"    {C_DIM}• {d}{C_RESET}")
         except Exception as e:
-            _print_error(f"更新过程发生错误: {e}")
+            _print_error(f"更新过程异常: {e}")
 
         print()
         _read_input("按 Enter 返回主菜单")
 
-    # ── 4. 配置 Telegram Bot（引导式）────────────
+    # ── U. 更新 f2b-manager ──────────────────────
 
-    def _menu_config_telegram(self) -> None:
-        """引导式配置 Telegram Bot 通知"""
-        _print_header("配置 Telegram Bot 通知")
+    def _menu_update_manager(self) -> None:
+        """更新 f2b-manager 自身"""
+        _clear_screen()
+        _print_header("更新 f2b-manager")
 
-        print(f"  {C_CYAN}此向导将帮助你创建并配置 Telegram Bot 通知功能。{C_RESET}")
-        print()
-        print(f"  {C_BOLD}准备工作：{C_RESET}")
-        print(f"  {C_DIM}  1. 在 Telegram 中搜索 @BotFather{C_RESET}")
-        print(f"  {C_DIM}  2. 发送 /newbot 创建机器人{C_RESET}")
-        print(f"  {C_DIM}  3. 按提示输入机器人名称和用户名{C_RESET}")
-        print(f"  {C_DIM}  4. 复制收到的 Bot Token（格式: 数字:字母数字串）{C_RESET}")
-        print(f"  {C_DIM}  5. 给新 Bot 发送任意消息（如 /start）{C_RESET}")
-        print(f"  {C_DIM}  6. 访问 https://api.telegram.org/bot<你的Token>/getUpdates 获取 Chat ID{C_RESET}")
+        print(f"  当前版本: {C_GREEN}{LOCAL_VERSION}{C_RESET}")
+        if self._latest_version:
+            print(f"  最新版本: {C_YELLOW}{self._latest_version}{C_RESET}")
         print()
 
-        # ── 输入 Bot Token ──
-        while True:
-            print(f"  {C_BOLD}步骤 1/3: Bot Token{C_RESET}")
-            token = _read_input("请输入 Bot Token（格式: 数字:字母数字串）")
-            if not token:
-                _print_info("已取消配置")
-                _read_input("按 Enter 返回")
-                return
-            if self._validate_token(token):
-                _print_success("Token 格式校验通过")
-                break
-            _print_error("Token 格式不正确，应为 数字:字母数字串格式")
-            print()
-
-        # ── 输入 Chat ID ──
-        while True:
-            print()
-            print(f"  {C_BOLD}步骤 2/3: Chat ID{C_RESET}")
-            chat_id_raw = _read_input("请输入你的 Telegram Chat ID（纯数字）")
-            if not chat_id_raw:
-                _print_info("已取消配置")
-                _read_input("按 Enter 返回")
-                return
-            if chat_id_raw.isdigit():
-                chat_id = int(chat_id_raw)
-                break
-            _print_error("Chat ID 必须是纯数字，请重试")
-
-        # ── 可选：操作员 chat_id ──
-        print()
-        operator_ids: list[int] = []
-        while True:
-            op_raw = _read_input(
-                "输入额外的操作员 Chat ID（可选，直接按 Enter 跳过）"
-            )
-            if not op_raw:
-                break
-            if op_raw.isdigit():
-                operator_ids.append(int(op_raw))
-                _print_success(f"已添加操作员: {op_raw}")
-            else:
-                _print_error("Chat ID 必须是纯数字，已跳过")
-
-        # ── 发送测试消息 ──
-        print()
-        print(f"  {C_BOLD}步骤 3/3: 验证 Bot Token{C_RESET}")
-        _print_progress("正在发送测试消息到 Telegram")
-        test_ok = self._test_telegram_token(token, chat_id)
-        _print_done()
-
-        if not test_ok:
-            _print_error("测试消息发送失败！")
-            print(f"  {C_YELLOW}  可能原因：{C_RESET}")
-            print(f"  {C_DIM}  - Token 不正确或已过期{C_RESET}")
-            print(f"  {C_DIM}  - Chat ID 不正确{C_RESET}")
-            print(f"  {C_DIM}  - 需要先给 Bot 发送任意消息{C_RESET}")
-            print(f"  {C_DIM}  - 网络不通，无法访问 Telegram API{C_RESET}")
-            print()
-            if not _confirm("是否仍然保存配置？（Token 无效时保存可能无法正常运行）"):
-                _print_info("已取消保存")
-                _read_input("按 Enter 返回")
-                return
-
-        else:
-            _print_success("测试消息发送成功！请检查 Telegram 是否收到消息")
-
-        # ── 保存配置 ──
-        print()
-        _print_progress("正在保存配置")
-        try:
-            from .config import save_config
-
-            self._config.telegram.bot_token = token
-            self._config.telegram.admin_chat_ids = [chat_id]
-            self._config.telegram.operator_chat_ids = operator_ids
-            self._config.telegram.notify_chat_id = chat_id
-            self._config.config_path = self._config_path
-
-            save_config(self._config, self._config_path)
-            _print_done()
-            _print_success(f"配置已保存到: {self._config_path}")
-        except Exception as e:
-            _print_error(f"保存配置失败: {e}")
+        if not _confirm("确定要更新 f2b-manager 到最新版本吗？"):
+            print(f"  {C_DIM}已取消{C_RESET}")
             _read_input("按 Enter 返回")
             return
 
-        # ── 是否立即重启服务 ──
-        print()
-        if _confirm("配置已更新，是否立即重启 f2b-manager 服务？"):
-            _print_info("正在重启服务...")
-            self._systemctl("restart", "f2b-manager")
-            _print_success("服务已重启")
+        # 确定源代码路径
+        repo_dir = "/tmp/f2b-manager"
+        if not os.path.isdir(os.path.join(repo_dir, ".git")):
+            _print_info("正在克隆仓库...")
+            r = subprocess.run(
+                ["git", "clone", "https://github.com/rl0226-cyber/f2b-manager.git", repo_dir],
+                capture_output=True, text=True,
+            )
+            if r.returncode != 0:
+                _print_error(f"克隆仓库失败: {r.stderr}")
+                _read_input("按 Enter 返回")
+                return
+
+        # git pull
+        _print_info("正在拉取最新代码...")
+        r = subprocess.run(
+            ["git", "-C", repo_dir, "pull", "origin", "main"],
+            capture_output=True, text=True,
+        )
+        if r.returncode != 0:
+            _print_error(f"拉取代码失败: {r.stderr}")
+            _read_input("按 Enter 返回")
+            return
+
+        # 检查是否有更新
+        if "Already up to date" in r.stdout or "Already up-to-date" in r.stdout:
+            _print_success("已是最新版本，无需更新")
+            _read_input("按 Enter 返回")
+            return
+
+        _print_success("代码已更新")
+
+        # 复制文件
+        _print_info("正在部署更新...")
+        src = os.path.join(repo_dir, "f2b_manager")
+        dst = "/opt/f2b-manager/f2b_manager"
+        r = subprocess.run(
+            ["cp", "-r", f"{src}/", dst],
+            capture_output=True, text=True,
+        )
+        if r.returncode != 0:
+            _print_error(f"部署失败: {r.stderr}")
+            _read_input("按 Enter 返回")
+            return
+
+        _print_success("文件已部署")
+
+        # 重启服务
+        _print_info("正在重启服务...")
+        r = subprocess.run(
+            ["systemctl", "restart", "f2b-manager"],
+            capture_output=True, text=True,
+        )
+        if r.returncode == 0:
+            _print_success("服务已重启，更新完成！")
         else:
-            _print_info("请稍后手动重启服务使配置生效")
+            _print_warning(f"服务重启可能失败: {r.stderr}")
+            _print_info("请手动执行: systemctl restart f2b-manager")
+
+        # 清除版本缓存
+        if os.path.exists(_VERSION_CACHE):
+            os.remove(_VERSION_CACHE)
+
+        print()
+        print(f"  {C_GREEN}更新完成！下次打开菜单将显示新版本号。{C_RESET}")
+        print()
+        _read_input("按 Enter 返回主菜单")
+
+    # ── 4. 配置 Telegram Bot ─────────────────────
+
+    def _menu_config_telegram(self) -> None:
+        """引导式配置 Telegram Bot"""
+        _clear_screen()
+        _print_header("配置 Telegram Bot 通知")
+        print("  本向导将引导你完成 Telegram Bot 配置，无需手动编辑文件。")
+        print()
+        print(f"  {C_BOLD}【第 1 步】创建 Bot{C_RESET}")
+        print("    1. 打开 Telegram，搜索 @BotFather")
+        print("    2. 发送 /newbot，按提示输入 Bot 名称和用户名")
+        print("    3. 复制返回的 Bot Token（格式如 123456789:ABCdef...）")
+        print()
+
+        while True:
+            token = _read_input("请输入 Bot Token（格式: 数字:字母数字串）").strip()
+            if not token:
+                _print_error("Token 不能为空")
+                continue
+            # 校验格式
+            if re.match(r"^\d+:[A-Za-z0-9_-]+$", token):
+                break
+            _print_error("Token 格式不正确，应为 数字:字母数字串")
+        _print_success("Token 格式校验通过")
+        print()
+
+        print(f"  {C_BOLD}【第 2 步】获取你的 Chat ID{C_RESET}")
+        print("    1. 在 Telegram 搜索 @userinfobot")
+        print("    2. 给它发任意消息")
+        print("    3. 它会回复你的 User ID（纯数字）")
+        print()
+
+        while True:
+            chat_id_raw = _read_input("请输入你的 Telegram Chat ID（纯数字）").strip()
+            if not chat_id_raw:
+                _print_error("Chat ID 不能为空")
+                continue
+            if chat_id_raw.isdigit():
+                break
+            _print_error("Chat ID 应为纯数字")
+        chat_id = int(chat_id_raw)
+        print()
+
+        # 可选：操作员
+        extra = _read_input("输入额外的操作员 Chat ID（可选，直接按 Enter 跳过）").strip()
+        extra_ids = []
+        if extra:
+            for eid in extra.split(","):
+                eid = eid.strip()
+                if eid.isdigit():
+                    extra_ids.append(int(eid))
+        print()
+
+        print(f"  {C_BOLD}【第 3 步】验证连接{C_RESET}")
+        _print_info("正在发送测试消息到 Telegram...")
+
+        send_ok = False
+        try:
+            resp = httpx.post(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                json={
+                    "chat_id": chat_id,
+                    "text": "✅ f2b-manager 配置测试成功！\n\n你的 Bot 已就绪，封禁预警将自动推送。",
+                },
+                timeout=10,
+            )
+            data = resp.json() if resp.status_code == 200 else {}
+            if data.get("ok"):
+                send_ok = True
+                _print_success("测试消息已发送，请打开 Telegram 查看")
+            else:
+                _print_error(f"测试消息发送失败: {data.get('description', resp.text[:200])}")
+        except Exception as e:
+            _print_error(f"测试消息发送失败: {e}")
+
+        if not send_ok:
+            print()
+            print(f"  {C_YELLOW}可能原因:{C_RESET}")
+            print("    - Token 不正确或已过期")
+            print("    - Chat ID 不正确")
+            print("    - 需要先在 Telegram 给 Bot 发一条任意消息")
+            print("    - VPS 网络不通，无法访问 Telegram API")
+
+        print()
+        if not send_ok and not _confirm("测试消息发送失败，是否仍然保存配置？"):
+            print(f"  {C_DIM}已取消{C_RESET}")
+            _read_input("按 Enter 返回")
+            return
+
+        # 保存配置
+        print()
+        _print_info("正在保存配置...")
+
+        from .config import save_config
+        self._config.telegram.bot_token = token
+        self._config.telegram.admin_chat_ids = [chat_id] + extra_ids
+        self._config.telegram.notify_chat_id = chat_id
+        if extra_ids:
+            self._config.telegram.operator_chat_ids = extra_ids
+
+        save_config(self._config, self._config_path)
+        _print_success(f"配置已保存到: {self._config_path}")
+
+        print()
+        _print_info("配置完成！需要重启服务才能生效")
+        if _confirm("是否立即重启 f2b-manager 服务？"):
+            r = subprocess.run(["systemctl", "restart", "f2b-manager"], capture_output=True)
+            if r.returncode == 0:
+                _print_success("服务已重启")
+            else:
+                _print_warning("服务重启失败，请手动执行: systemctl restart f2b-manager")
+        else:
+            print(f"  {C_DIM}可稍后执行: systemctl restart f2b-manager{C_RESET}")
 
         print()
         _read_input("按 Enter 返回主菜单")
 
-    def _validate_token(self, token: str) -> bool:
-        """验证 Bot Token 格式: 数字:字母数字串"""
-        return bool(re.match(r"^\d+:[A-Za-z0-9_-]+$", token))
-
-    def _test_telegram_token(self, token: str, chat_id: int) -> bool:
-        """通过 httpx 调用 Telegram API 发送测试消息验证 Token"""
-        try:
-            import httpx
-
-            url = (
-                f"https://api.telegram.org/bot{token}/sendMessage"
-                f"?chat_id={chat_id}"
-                f"&text=f2b-manager%20%E9%85%8D%E7%BD%AE%E6%B5%8B%E8%AF%95%E2%9C%85"
-            )
-            with httpx.Client(timeout=15) as client:
-                response = client.get(url)
-                data = response.json()
-                return data.get("ok", False)
-        except Exception:
-            return False
-
-    # ── 5. 查看运行状态 ─────────────────────────
+    # ── 5. 查看运行状态 ──────────────────────────
 
     def _menu_status(self) -> None:
-        """查看 fail2ban 运行状态"""
+        """查看 Fail2ban 运行状态"""
+        _clear_screen()
         _print_header("Fail2ban 运行状态")
 
         if self._f2b_manager is None:
-            _print_warning("Fail2ban 管理模块未就绪，尝试直接调用系统命令...")
-            self._fallback_f2b_status()
+            _print_error("Fail2ban 管理模块未就绪")
             _read_input("按 Enter 返回")
             return
 
         try:
+            from .utils.shell import run_command
             status = self._f2b_manager.get_status()
-
-            # 版本
-            print(f"  {C_BOLD}版本:{C_RESET}   {status.version}")
-
-            # 运行状态
+            print(f"  版本: {C_GREEN}{status.version}{C_RESET}")
             state_color = C_GREEN if status.state.value == "running" else C_RED
-            state_icon = "● 运行中" if status.state.value == "running" else "○ 已停止"
-            print(f"  {C_BOLD}状态:{C_RESET}   {state_color}{state_icon}{C_RESET}")
-
-            # Jail 数量
-            print(f"  {C_BOLD}Jail 数:{C_RESET} {status.jail_count}")
-
-            # 总封禁数
-            print(f"  {C_BOLD}总封禁:{C_RESET} {status.total_bans}")
-
-            # 运行时长
-            if status.uptime:
-                print(f"  {C_BOLD}运行时长:{C_RESET} {status.uptime}")
-
+            print(f"  状态: {state_color}{status.state.value}{C_RESET}")
+            print(f"  Jail 数: {status.jail_count}")
+            print(f"  总封禁: {status.total_bans}")
+            print(f"  运行时长: {status.uptime}")
             print()
 
-            # 尝试获取 jail 详情
-            try:
-                jails = self._f2b_manager.get_jails()
-                if jails:
-                    print(f"  {C_BOLD}Jail 详情:{C_RESET}")
-                    for jail in jails:
-                        flag = f"{C_GREEN}✓{C_RESET}" if jail.enabled else f"{C_RED}✗{C_RESET}"
-                        print(
-                            f"    {flag} {C_BOLD}{jail.name}{C_RESET}  "
-                            f"当前封禁: {C_YELLOW}{jail.current_ban}{C_RESET}  "
-                            f"总封禁: {jail.total_banned}  "
-                            f"总失败: {jail.total_failed}"
-                        )
-            except Exception as e:
-                _print_warning(f"获取 jail 详情失败: {e}")
-
+            # 各 jail 详情
+            jails = self._f2b_manager.get_jails()
+            if jails:
+                print(f"  {C_BOLD}Jail 列表:{C_RESET}")
+                for j in jails:
+                    icon = "✅" if j.enabled else "❌"
+                    print(f"    {icon} {j.name}: 封禁 {j.current_ban} | 失败 {j.total_failed} | 累计 {j.total_banned}")
         except Exception as e:
             _print_error(f"获取状态失败: {e}")
             _print_info("提示: 请确认 fail2ban 已安装并运行")
@@ -524,81 +662,40 @@ class InteractiveMenu:
         print()
         _read_input("按 Enter 返回主菜单")
 
-    def _fallback_f2b_status(self) -> None:
-        """回退方式获取 fail2ban 状态（直接调用命令）"""
-        try:
-            from .utils.shell import run_command
-            result = run_command("fail2ban-client status", timeout=10)
-            if result.success:
-                print(f"  {C_DIM}{result.stdout}{C_RESET}")
-            else:
-                _print_warning(f"fail2ban-client 不可用: {result.stderr}")
-        except Exception as e:
-            _print_error(f"无法获取状态: {e}")
-
-    # ── 6. 查看封禁 IP 列表 ─────────────────────
+    # ── 6. 查看封禁 IP 列表 ──────────────────────
 
     def _menu_banned_ips(self) -> None:
-        """查看封禁 IP 列表（表格显示）"""
+        """查看封禁 IP 列表"""
+        _clear_screen()
         _print_header("封禁 IP 列表")
 
         if self._f2b_manager is None:
-            _print_warning("Fail2ban 管理模块未就绪，尝试直接调用系统命令...")
-            try:
-                from .utils.shell import run_command
-                result = run_command("fail2ban-client banned", timeout=10)
-                if result.success:
-                    print(f"  {C_DIM}{result.stdout}{C_RESET}")
-                else:
-                    _print_error(f"fail2ban-client 不可用: {result.stderr}")
-            except Exception as e:
-                _print_error(f"获取封禁列表失败: {e}")
+            _print_error("Fail2ban 管理模块未就绪")
             _read_input("按 Enter 返回")
             return
 
         try:
-            # 获取每个 jail 的详情
-            jails = self._f2b_manager.get_jails()
-            total_banned = 0
-
-            if not jails:
-                _print_info("没有启用的 jail，封禁列表为空")
-                _read_input("按 Enter 返回")
-                return
-
-            # 表头
-            print(f"  {C_BOLD}{'Jail':<16} {'IP 地址':<20} {'当前封禁':>8}  {'累计封禁':>8}{C_RESET}")
-            print(f"  {C_DIM}{'─' * 16} {'─' * 20} {'─' * 8}  {'─' * 8}{C_RESET}")
-
-            for jail_info in jails:
-                try:
-                    detail = self._f2b_manager.get_jail_status(jail_info.name)
-                    if detail.banned_ips:
-                        for ip in detail.banned_ips:
-                            print(f"  {jail_info.name:<16} {C_RED}{ip:<20}{C_RESET} "
-                                  f"{detail.current_ban:>8}  {detail.total_banned:>8}")
-                            total_banned += 1
-                    else:
-                        print(f"  {jail_info.name:<16} {C_DIM}(空){C_RESET}")
-                except Exception:
-                    print(f"  {jail_info.name:<16} {C_DIM}(获取失败){C_RESET}")
-
-            print(f"  {C_DIM}{'─' * 16} {'─' * 20} {'─' * 8}  {'─' * 8}{C_RESET}")
-            print(f"  {C_BOLD}共 {total_banned} 个 IP 被封禁{C_RESET}")
-
+            ips = self._f2b_manager.get_banned_ips()
+            if not ips:
+                _print_success("当前无封禁 IP")
+            else:
+                print(f"  {C_BOLD}共 {len(ips)} 个 IP 被封禁:{C_RESET}")
+                print()
+                for i, ip in enumerate(ips, 1):
+                    print(f"  {C_BOLD}{i}.{C_RESET} {C_RED}{ip}{C_RESET}")
         except Exception as e:
             _print_error(f"获取封禁列表失败: {e}")
-            _print_info("提示: 请确认 fail2ban 已安装并运行")
 
         print()
         _read_input("按 Enter 返回主菜单")
 
-    # ── 7. 手动封禁/解封 IP ─────────────────────
+    # ── 7. 手动封禁 / 解封 IP ────────────────────
 
     def _menu_ban_manage(self) -> None:
-        """手动封禁/解封 IP 子菜单"""
+        """手动封禁/解封 子菜单"""
+        _clear_screen()
         while True:
-            _print_header("IP 封禁管理")
+            _print_header("手动封禁 / 解封 IP")
             menu_items = [
                 ("1", "封禁 IP", "手动封禁指定 IP 地址"),
                 ("2", "解封 IP", "手动解封指定 IP 地址"),
@@ -621,6 +718,7 @@ class InteractiveMenu:
 
     def _menu_ban_ip(self) -> None:
         """封禁 IP 子流程"""
+        _clear_screen()
         _print_header("手动封禁 IP")
 
         if self._f2b_manager is None:
@@ -628,44 +726,34 @@ class InteractiveMenu:
             _read_input("按 Enter 返回")
             return
 
-        # 输入 IP
         while True:
-            ip = _read_input("请输入要封禁的 IP 地址（如 192.168.1.100）")
+            ip = _read_input("请输入要封禁的 IP 地址（如 192.168.1.100）").strip()
             if not ip:
-                _print_info("已取消")
-                _read_input("按 Enter 返回")
-                return
-            if self._validate_ip(ip):
+                continue
+            try:
+                ipaddress.ip_address(ip)
                 break
-            _print_error("IP 地址格式不正确，请输入有效 IPv4 地址")
+            except ValueError:
+                _print_error("IP 地址格式不正确，请输入有效 IPv4 地址")
 
-        # 输入 jail（可选）
-        jail = _read_input("请输入 jail 名称（默认: sshd）", "sshd")
-
+        jail = _read_input("请输入 jail 名称（默认: sshd）", "sshd").strip()
         print()
-        print(f"  {C_YELLOW}即将封禁: IP={ip}, Jail={jail}{C_RESET}")
-        if not _confirm("确认执行封禁？"):
-            _print_info("已取消")
-            _read_input("按 Enter 返回")
-            return
 
-        print()
-        _print_progress(f"正在封禁 {ip}")
         try:
             success = self._f2b_manager.ban_ip(ip, jail)
             if success:
-                _print_done()
-                _print_success(f"IP {ip} 已在 jail '{jail}' 中封禁")
+                _print_success(f"已封禁 {ip}（jail: {jail}）")
             else:
                 _print_error(f"封禁 {ip} 失败")
         except Exception as e:
-            _print_error(f"封禁过程发生错误: {e}")
+            _print_error(f"封禁失败: {e}")
 
         print()
         _read_input("按 Enter 继续")
 
     def _menu_unban_ip(self) -> None:
         """解封 IP 子流程"""
+        _clear_screen()
         _print_header("手动解封 IP")
 
         if self._f2b_manager is None:
@@ -673,52 +761,51 @@ class InteractiveMenu:
             _read_input("按 Enter 返回")
             return
 
-        # 输入 IP
         while True:
-            ip = _read_input("请输入要解封的 IP 地址")
+            ip = _read_input("请输入要解封的 IP 地址").strip()
             if not ip:
-                _print_info("已取消")
-                _read_input("按 Enter 返回")
-                return
-            if self._validate_ip(ip):
+                continue
+            try:
+                ipaddress.ip_address(ip)
                 break
-            _print_error("IP 地址格式不正确，请输入有效 IPv4 地址")
+            except ValueError:
+                _print_error("IP 地址格式不正确，请输入有效 IPv4 地址")
 
-        print()
-        print(f"  {C_YELLOW}即将解封: IP={ip}{C_RESET}")
-        if not _confirm("确认执行解封？"):
-            _print_info("已取消")
-            _read_input("按 Enter 返回")
+        # 检查是否被封禁
+        found_jail = None
+        try:
+            for j in self._f2b_manager.get_jails():
+                js = self._f2b_manager.get_jail_status(j.name)
+                if ip in js.banned_ips:
+                    found_jail = j.name
+                    break
+        except Exception:
+            pass
+
+        if found_jail is None:
+            _print_warning(f"{ip} 不在任何 jail 的封禁列表中，无需解封")
+            print()
+            _read_input("按 Enter 继续")
             return
 
         print()
-        _print_progress(f"正在解封 {ip}")
         try:
             success = self._f2b_manager.unban_ip(ip)
             if success:
-                _print_done()
-                _print_success(f"IP {ip} 已解封")
+                _print_success(f"已解封 {ip}（原 jail: {found_jail}）")
             else:
                 _print_error(f"解封 {ip} 失败")
         except Exception as e:
-            _print_error(f"解封过程发生错误: {e}")
+            _print_error(f"解封失败: {e}")
 
         print()
         _read_input("按 Enter 继续")
 
-    @staticmethod
-    def _validate_ip(ip: str) -> bool:
-        """校验 IPv4 地址格式"""
-        try:
-            ipaddress.IPv4Address(ip)
-            return True
-        except (ipaddress.AddressValueError, ValueError):
-            return False
-
     # ── 8. 服务控制 ──────────────────────────────
 
     def _menu_service_control(self) -> None:
-        """启动 / 停止 / 重启服务 子菜单"""
+        """启动/停止/重启 子菜单"""
+        _clear_screen()
         while True:
             _print_header("服务控制")
             menu_items = [
@@ -754,104 +841,56 @@ class InteractiveMenu:
             elif choice == 5:
                 self._systemctl("restart", "fail2ban")
             elif choice == 6:
-                self._show_service_status()
+                self._systemctl_status()
             elif choice == 7:
                 break
 
-            print()
-            _read_input("按 Enter 继续")
-
     def _systemctl(self, action: str, service: str) -> None:
-        """执行 systemctl 命令并显示结果"""
-        _print_progress(f"systemctl {action} {service}")
-        try:
-            from .utils.shell import run_command
-            result = run_command(
-                f"systemctl {action} {service}", timeout=30
-            )
-            if result.success:
-                _print_done()
-                _print_success(f"服务 {service}: {action} 成功")
-            else:
-                _print_error(f"操作失败: {result.stderr[:200]}")
-        except Exception as e:
-            _print_error(f"执行失败: {e}")
+        """执行 systemctl 命令"""
+        r = subprocess.run(
+            ["systemctl", action, service],
+            capture_output=True, text=True,
+        )
+        if r.returncode == 0:
+            _print_success(f"systemctl {action} {service} 成功")
+        else:
+            _print_error(f"systemctl {action} {service} 失败: {r.stderr.strip()}")
 
-    def _show_service_status(self) -> None:
-        """查看 f2b-manager 和 fail2ban 服务状态"""
-        print()
-        for service in ("f2b-manager", "fail2ban"):
-            try:
-                from .utils.shell import run_command
-                result = run_command(
-                    f"systemctl is-active {service}", timeout=10
-                )
-                active = result.stdout.strip()
-                color = C_GREEN if active == "active" else C_RED
-                icon = "● 运行中" if active == "active" else "○ 已停止"
-                print(f"  {C_BOLD}{service}:{C_RESET} {color}{icon}{C_RESET}")
+    def _systemctl_status(self) -> None:
+        """查看服务状态"""
+        print(f"  {C_BOLD}f2b-manager:{C_RESET}")
+        r = subprocess.run(
+            ["systemctl", "is-active", "f2b-manager"],
+            capture_output=True, text=True,
+        )
+        status = "active" if "active" in r.stdout else r.stdout.strip()
+        color = C_GREEN if status == "active" else C_RED
+        print(f"    状态: {color}{status}{C_RESET}")
 
-                # 显示更多状态
-                status_result = run_command(
-                    f"systemctl status {service} --no-pager -l --lines=0",
-                    timeout=10,
-                )
-                if status_result.success:
-                    # 提取关键行
-                    for line in status_result.stdout.split("\n"):
-                        line = line.strip()
-                        if any(kw in line for kw in ("Active:", "Loaded:", "Main PID:")):
-                            print(f"    {C_DIM}{line}{C_RESET}")
-            except Exception:
-                print(f"  {C_BOLD}{service}:{C_RESET} {C_DIM}无法获取状态{C_RESET}")
-
-            print()
+        print(f"  {C_BOLD}fail2ban:{C_RESET}")
+        r = subprocess.run(
+            ["systemctl", "is-active", "fail2ban"],
+            capture_output=True, text=True,
+        )
+        status = "active" if "active" in r.stdout else r.stdout.strip()
+        color = C_GREEN if status == "active" else C_RED
+        print(f"    状态: {color}{status}{C_RESET}")
 
     # ── 9. 查看日志 ──────────────────────────────
 
     def _menu_view_logs(self) -> None:
-        """查看最近日志"""
-        _print_header("查看日志")
+        """查看日志"""
+        _clear_screen()
+        _print_header("运行日志（最近 50 行）")
 
-        lines = _read_input("显示最近多少行（默认 50）", "50")
-        try:
-            n_lines = int(lines)
-        except ValueError:
-            n_lines = 50
+        r = subprocess.run(
+            ["journalctl", "-u", "f2b-manager", "--no-pager", "-n", "50"],
+            capture_output=True, text=True,
+        )
+        if r.stdout:
+            print(r.stdout)
+        else:
+            _print_info("无日志或日志为空")
 
-        print()
-        print(f"  {C_DIM}最近 {n_lines} 行日志:{C_RESET}")
-        _print_separator()
-
-        try:
-            from .utils.shell import run_command
-            result = run_command(
-                f"journalctl -u f2b-manager --no-pager -n {n_lines}",
-                timeout=10,
-            )
-            if result.success:
-                for line in result.stdout.split("\n"):
-                    # 根据日志级别着色
-                    if "ERROR" in line or "error" in line.lower():
-                        print(f"  {C_RED}{line}{C_RESET}")
-                    elif "WARN" in line or "warning" in line.lower():
-                        print(f"  {C_YELLOW}{line}{C_RESET}")
-                    else:
-                        print(f"  {C_DIM}{line}{C_RESET}")
-            else:
-                if "No journal files" in result.stderr or "No entries" in result.stderr:
-                    _print_info("暂无日志记录（服务可能尚未运行）")
-                else:
-                    _print_warning(f"读取日志失败: {result.stderr[:200]}")
-        except Exception as e:
-            _print_error(f"读取日志失败: {e}")
-
-        _print_separator()
         print()
         _read_input("按 Enter 返回主菜单")
-
-
-# ── 命令行直接运行（调试用）──────────────────────
-if __name__ == "__main__":
-    menu = InteractiveMenu()
-    menu.run()

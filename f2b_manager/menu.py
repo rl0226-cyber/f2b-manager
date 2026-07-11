@@ -99,16 +99,23 @@ def _read_input(prompt: str, default: str = "") -> str:
 
 
 def _read_choice(prompt: str, choices: list[str], default: int = 0) -> int:
-    """读取数字选择，返回选择的索引（0-based）"""
+    """读取数字选择，返回选择的索引（0-based）
+
+    输入 1-N 对应第 1 到第 N 个选项。
+    输入 0 特殊映射到最后一个选项（用于"返回/退出"）。
+    """
     while True:
         raw = _read_input(prompt).strip()
         if not raw:
             return default
         try:
-            idx = int(raw) - 1  # 用户输入 1-based
+            num = int(raw)
+            if num == 0:
+                return len(choices) - 1  # 0 = 最后一项（返回/退出）
+            idx = num - 1  # 1-based → 0-based
             if 0 <= idx < len(choices):
                 return idx
-            _print_error(f"请输入 1-{len(choices)} 之间的数字")
+            _print_error(f"请输入 0-{len(choices)} 之间的数字")
         except ValueError:
             _print_error("请输入有效数字")
 

@@ -89,14 +89,19 @@ class Fail2banInstaller:
         return server is not None and client is not None
 
     def _get_f2b_version(self) -> str:
-        """获取当前安装的 fail2ban 版本号"""
-        try:
-            result = run_command("fail2ban-client version", timeout=10, check=False)
-            if result.success:
-                from .parser import parse_version
-                return parse_version(result.stdout)
-        except Exception as e:
-            _logger.warning("获取 fail2ban 版本失败: %s", e)
+        """获取当前安装的 fail2ban 版本号，失败时重试 3 次"""
+        from .parser import parse_version
+        for attempt in range(3):
+            try:
+                result = run_command("fail2ban-client version", timeout=10, check=False)
+                if result.success:
+                    ver = parse_version(result.stdout)
+                    if ver:
+                        return ver
+            except Exception as e:
+                _logger.warning("获取 fail2ban 版本失败 (尝试 %d/3): %s", attempt + 1, e)
+            if attempt < 2:
+                time.sleep(1)
         return "unknown"
 
     def _run_systemctl(self, action: str, service: str = "fail2ban") -> bool:
@@ -440,6 +445,7 @@ class Fail2banInstaller:
         # 步骤4: 重启服务
         self._run_systemctl("restart", "fail2ban")
         details.append("fail2ban 服务已重启")
+        time.sleep(1)  # 等待服务稳定启动
 
         # 步骤5: 记录新版本
         new_version = self._get_f2b_version()

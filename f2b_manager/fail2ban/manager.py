@@ -13,6 +13,7 @@ Fail2ban 运行时管理器。
 
 from __future__ import annotations
 
+import datetime
 import subprocess
 from typing import Optional
 
@@ -36,6 +37,61 @@ _logger = get_logger(__name__)
 
 # fail2ban-client 命令路径
 _F2B_CLIENT = "fail2ban-client"
+
+
+def _get_service_uptime(service: str) -> str:
+    """获取 systemd 服务的运行时长。
+
+    Args:
+        service: systemd 服务名
+
+    Returns:
+        人类可读的运行时长字符串（如 "2h 30m"），获取失败返回空字符串
+    """
+    try:
+        r = subprocess.run(
+            ["systemctl", "show", service, "--property=ActiveEnterTimestamp"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if r.returncode != 0:
+            return ""
+
+        # 格式: ActiveEnterTimestamp=Sun 2026-07-12 01:06:55 CST
+        line = r.stdout.strip()
+        if "=" not in line:
+            return ""
+        ts_str = line.split("=", 1)[1].strip()
+
+        # 解析时间戳
+        # systemd 输出格式: "Day YYYY-MM-DD HH:MM:SS TZ"
+        # 或 "YYYY-MM-DD HH:MM:SS TZ"
+        try:
+            # 尝试多种格式
+            for fmt in ("%a %Y-%m-%d %H:%M:%S %Z", "%Y-%m-%d %H:%M:%S %Z"):
+                try:
+                    start = datetime.datetime.strptime(ts_str, fmt)
+                    # systemd 返回的是本地时间，我们需要把它转成 UTC 或直接用
+                    # 但 strptime 默认创建 naive datetime，需要处理
+                    now = datetime.datetime.now()
+                    delta = now - start
+                    break
+                except ValueError:
+                    continue
+            else:
+                return ""
+
+            # 格式化为人类可读
+            if delta.days > 0:
+                return f"{delta.days}d {delta.seconds // 3600}h"
+            hours = delta.seconds // 3600
+            mins = (delta.seconds % 3600) // 60
+            if hours > 0:
+                return f"{hours}h {mins}m"
+            return f"{mins}m"
+        except Exception:
+            return ""
+    except Exception:
+        return ""
 
 
 class Fail2banNotAvailableError(RuntimeError):
@@ -141,6 +197,10 @@ class Fail2banManager:
         except Exception:
             _logger.warning("fail2ban 服务可能未运行")
             status.state = ServiceState.STOPPED
+
+        # 2a. 获取运行时长
+        if status.state == ServiceState.RUNNING:
+            status.uptime = _get_service_uptime("fail2ban")
 
         try:
             # 3. 解析 status 输出获取 jail 数量和基本信息

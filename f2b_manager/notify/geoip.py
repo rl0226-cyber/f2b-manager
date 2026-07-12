@@ -214,9 +214,9 @@ class GeoIPLookup:
 
 
 def lookup_country_sync(ip: str, db_path: str = _GEOIP_DB_PATH) -> str:
-    """同步查询 IP 归属国家（仅在本地数据库可用时）。
+    """同步查询 IP 归属国家（本地数据库优先，API 回退）。
 
-    用于 CLI 等同步环境，不调用 API。
+    用于 CLI 等同步环境。
 
     Args:
         ip: IP 地址
@@ -228,21 +228,39 @@ def lookup_country_sync(ip: str, db_path: str = _GEOIP_DB_PATH) -> str:
     if _is_private_ip(ip):
         return ""
 
+    # 1. 尝试本地 mmdb
     try:
         import maxminddb
-        if not os.path.exists(db_path):
-            return ""
-        reader = maxminddb.open_database(db_path)
-        try:
-            result = reader.get(ip)
-            if result and "country" in result:
-                country = result["country"].get("names", {}).get("zh-CN", "")
-                code = result["country"].get("iso_code", "")
-                if country:
-                    flag = _country_code_to_flag(code)
-                    return f"{country} {flag}" if flag else country
-        finally:
-            reader.close()
+        if os.path.exists(db_path):
+            reader = maxminddb.open_database(db_path)
+            try:
+                result = reader.get(ip)
+                if result and "country" in result:
+                    country = result["country"].get("names", {}).get("zh-CN", "")
+                    code = result["country"].get("iso_code", "")
+                    if country:
+                        flag = _country_code_to_flag(code)
+                        return f"{country} {flag}" if flag else country
+            finally:
+                reader.close()
+    except Exception:
+        pass
+
+    # 2. 回退到 ip-api.com 在线 API
+    try:
+        import httpx
+        resp = httpx.get(
+            f"http://ip-api.com/json/{ip}",
+            params={"fields": "country,countryCode", "lang": "zh-CN"},
+            timeout=5,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            country = data.get("country", "")
+            code = data.get("countryCode", "")
+            if country:
+                flag = _country_code_to_flag(code)
+                return f"{country} {flag}" if flag else country
     except Exception:
         pass
 

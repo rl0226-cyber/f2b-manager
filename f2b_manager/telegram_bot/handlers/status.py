@@ -72,7 +72,7 @@ async def cmd_jails(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 @require_operator
 async def cmd_banned(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/banned — 列出当前所有被封禁 IP"""
+    """/banned — 列出当前所有被封禁 IP（含国家归属）"""
     deps = get_deps(context)
 
     if deps.f2b_manager is None:
@@ -81,8 +81,27 @@ async def cmd_banned(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     try:
         ips = deps.f2b_manager.get_banned_ips()
+
+        # 查询国家归属
+        countries: dict[str, str] = {}
+        if ips and deps.config.notify.geoip_enabled:
+            try:
+                from ...notify.geoip import GeoIPLookup
+                geo = GeoIPLookup(
+                    db_path=deps.config.notify.geoip_db_path,
+                    method=deps.config.notify.geoip_method,
+                )
+                for ip in ips:
+                    info = await geo.lookup(ip)
+                    if info.country:
+                        flag = f" {info.flag}" if info.flag else ""
+                        countries[ip] = f"{info.country}{flag}"
+                geo.close()
+            except Exception:
+                pass  # 查询失败不影响列表显示
+
         await update.message.reply_text(
-            format_banned_ips(ips), parse_mode="HTML"
+            format_banned_ips(ips, countries), parse_mode="HTML"
         )
     except Exception as e:
         logger.exception("获取封禁 IP 列表失败")

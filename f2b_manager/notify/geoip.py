@@ -16,8 +16,12 @@ from __future__ import annotations
 
 import ipaddress
 import logging
+import os
 from pathlib import Path
 from typing import Optional
+
+# 默认 GeoIP 数据库路径
+_GEOIP_DB_PATH = "/var/lib/GeoIP/GeoLite2-Country.mmdb"
 
 from ..storage.models import GeoInfo
 
@@ -207,3 +211,39 @@ class GeoIPLookup:
     def __del__(self) -> None:
         """析构时确保关闭连接。"""
         self.close()
+
+
+def lookup_country_sync(ip: str, db_path: str = _GEOIP_DB_PATH) -> str:
+    """同步查询 IP 归属国家（仅在本地数据库可用时）。
+
+    用于 CLI 等同步环境，不调用 API。
+
+    Args:
+        ip: IP 地址
+        db_path: maxminddb 数据库路径
+
+    Returns:
+        "国家名 🇨🇳" 格式的字符串，查询失败返回空字符串
+    """
+    if _is_private_ip(ip):
+        return ""
+
+    try:
+        import maxminddb
+        if not os.path.exists(db_path):
+            return ""
+        reader = maxminddb.open_database(db_path)
+        try:
+            result = reader.get(ip)
+            if result and "country" in result:
+                country = result["country"].get("names", {}).get("zh-CN", "")
+                code = result["country"].get("iso_code", "")
+                if country:
+                    flag = _country_code_to_flag(code)
+                    return f"{country} {flag}" if flag else country
+        finally:
+            reader.close()
+    except Exception:
+        pass
+
+    return ""

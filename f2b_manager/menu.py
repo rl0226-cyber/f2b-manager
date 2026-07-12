@@ -1207,10 +1207,14 @@ class InteractiveMenu:
             if not ips:
                 _print_success("当前无封禁 IP")
             else:
+                # 尝试加载 GeoIP 查询
+                from .notify.geoip import lookup_country_sync
                 print(f"  {C_BOLD}共 {len(ips)} 个 IP 被封禁:{C_RESET}")
                 print()
                 for i, ip in enumerate(ips, 1):
-                    print(f"  {C_BOLD}{i}.{C_RESET} {C_RED}{ip}{C_RESET}")
+                    country = lookup_country_sync(ip)
+                    country_str = f"  {C_DIM}{country}{C_RESET}" if country else ""
+                    print(f"  {C_BOLD}{i}.{C_RESET} {C_RED}{ip}{C_RESET}{country_str}")
         except Exception as e:
             _print_error(f"获取封禁列表失败: {e}")
 

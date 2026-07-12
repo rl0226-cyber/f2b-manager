@@ -105,8 +105,13 @@ def format_jail_detail(jail: "JailStatus") -> str:
     return "\n".join(lines)
 
 
-def format_banned_ips(ips: list[str]) -> str:
-    """格式化被封禁 IP 列表"""
+def format_banned_ips(ips: list[str], countries: dict[str, str] | None = None) -> str:
+    """格式化被封禁 IP 列表
+
+    Args:
+        ips: IP 列表
+        countries: IP→国家字典，如 {"1.2.3.4": "美国 🇺🇸"}
+    """
     if not ips:
         return "\U0001f6ab <b>当前封禁 IP 列表</b>\n\n当前没有被封禁的 IP。\n服务器一切平安 \U0001f60a"
 
@@ -117,7 +122,11 @@ def format_banned_ips(ips: list[str]) -> str:
     ]
 
     for i, ip in enumerate(ips, 1):
-        lines.append(f"  {i}. <code>{esc(ip)}</code>")
+        country = (countries or {}).get(ip, "")
+        if country:
+            lines.append(f"  {i}. <code>{esc(ip)}</code>  {country}")
+        else:
+            lines.append(f"  {i}. <code>{esc(ip)}</code>")
 
     return "\n".join(lines)
 

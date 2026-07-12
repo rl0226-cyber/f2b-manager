@@ -1208,20 +1208,20 @@ class InteractiveMenu:
                 _print_success("当前无封禁 IP")
             else:
                 # 尝试加载 GeoIP 查询（临时抑制 httpx 日志）
-            import logging
-            httpx_logger = logging.getLogger("httpx")
-            old_level = httpx_logger.level
-            httpx_logger.setLevel(logging.WARNING)
-            try:
-                from .notify.geoip import lookup_country_sync
-                print(f"  {C_BOLD}共 {len(ips)} 个 IP 被封禁:{C_RESET}")
-                print()
-                for i, ip in enumerate(ips, 1):
-                    country = lookup_country_sync(ip)
-                    country_str = f"  {C_DIM}{country}{C_RESET}" if country else ""
-                    print(f"  {C_BOLD}{i}.{C_RESET} {C_RED}{ip}{C_RESET}{country_str}")
-            finally:
-                httpx_logger.setLevel(old_level)
+                import logging
+                httpx_logger = logging.getLogger("httpx")
+                old_level = httpx_logger.level
+                httpx_logger.setLevel(logging.WARNING)
+                try:
+                    from .notify.geoip import lookup_country_sync
+                    print(f"  {C_BOLD}共 {len(ips)} 个 IP 被封禁:{C_RESET}")
+                    print()
+                    for i, ip in enumerate(ips, 1):
+                        country = lookup_country_sync(ip)
+                        country_str = f"  {C_DIM}{country}{C_RESET}" if country else ""
+                        print(f"  {C_BOLD}{i}.{C_RESET} {C_RED}{ip}{C_RESET}{country_str}")
+                finally:
+                    httpx_logger.setLevel(old_level)
         except Exception as e:
             _print_error(f"获取封禁列表失败: {e}")
 

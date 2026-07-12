@@ -23,6 +23,9 @@ from typing import Optional
 # 默认 GeoIP 数据库路径
 _GEOIP_DB_PATH = "/var/lib/GeoIP/GeoLite2-Country.mmdb"
 
+# API 限速：记录上次调用时间戳
+_api_last_call = 0.0
+
 from ..storage.models import GeoInfo
 
 logger = logging.getLogger("notify.geoip")
@@ -216,7 +219,7 @@ class GeoIPLookup:
 def lookup_country_sync(ip: str, db_path: str = _GEOIP_DB_PATH) -> str:
     """同步查询 IP 归属国家（本地数据库优先，API 回退）。
 
-    用于 CLI 等同步环境。
+    用于 CLI 等同步环境。内置简单缓存避免短时间内重复查询。
 
     Args:
         ip: IP 地址
@@ -246,9 +249,17 @@ def lookup_country_sync(ip: str, db_path: str = _GEOIP_DB_PATH) -> str:
     except Exception:
         pass
 
-    # 2. 回退到 ip-api.com 在线 API
+    # 2. 回退到 ip-api.com（串行+限速：最多 40 次/分钟）
     try:
         import httpx
+        import time as _time
+        # 限速：每两次请求间隔至少 1.5 秒（40次/分钟，留余量）
+        now = _time.monotonic()
+        elapsed = now - _api_last_call
+        if elapsed < 1.5:
+            _time.sleep(1.5 - elapsed)
+        _api_last_call = _time.monotonic()
+
         resp = httpx.get(
             f"http://ip-api.com/json/{ip}",
             params={"fields": "country,countryCode", "lang": "zh-CN"},

@@ -88,8 +88,10 @@ def _print_info(msg: str) -> None:
 
 
 def _clear_screen() -> None:
-    """清屏"""
-    print("\033[2J\033[H", end="")
+    """清屏（兼容多种终端环境）"""
+    os.system("clear")
+    sys.stdout.write("\033[2J\033[H")
+    sys.stdout.flush()
 
 
 def _read_input(prompt: str, default: str = "") -> str:
@@ -898,7 +900,138 @@ class InteractiveMenu:
         """引导式配置 Telegram Bot"""
         _clear_screen()
         _print_header("配置 Telegram Bot 通知")
+
+        # ── 若已配置，显示当前状态 ──
+        token = self._config.telegram.bot_token
+        if token and len(token) > 10:
+            self._show_telegram_status()
+            return
+
+        # ── 首次配置向导 ──
+        self._run_telegram_wizard()
+
+    def _show_telegram_status(self) -> None:
+        """显示已配置的 Telegram Bot 信息"""
+        token = self._config.telegram.bot_token
+        admin_ids = self._config.telegram.admin_chat_ids
+
+        print(f"  {C_GREEN}✅ Telegram Bot 已配置{C_RESET}")
+        print()
+        print(f"  {C_BOLD}Bot Token:{C_RESET}")
+        # 脱敏显示：前8位 + **** + 后4位
+        if len(token) > 16:
+            masked = token[:8] + "****" + token[-4:]
+        else:
+            masked = token[:5] + "****"
+        print(f"    {C_DIM}{masked}{C_RESET}")
+        print()
+        print(f"  {C_BOLD}管理员 Chat ID:{C_RESET}")
+        for uid in admin_ids:
+            print(f"    {uid}")
+        if not admin_ids:
+            print(f"    {C_RED}未设置{C_RESET}")
+        print()
+        print(f"  {C_BOLD}操作员 Chat ID:{C_RESET}")
+        ops = self._config.telegram.operator_chat_ids
+        if ops:
+            for uid in ops:
+                print(f"    {uid}")
+        else:
+            print(f"    {C_DIM}无{C_RESET}")
+        print()
+
+        print(f"  {C_BOLD}{C_GREEN}[1]{C_RESET} {C_BOLD}重新配置{C_RESET}")
+        print(f"   {C_DIM}重新运行配置向导，修改 Token 或 Chat ID{C_RESET}")
+        print(f"  {C_BOLD}{C_GREEN}[2]{C_RESET} {C_BOLD}仅修改 Chat ID{C_RESET}")
+        print(f"   {C_DIM}保留当前 Token，更新管理员 Chat ID{C_RESET}")
+        print(f"  {C_BOLD}{C_GREEN}[0]{C_RESET} {C_BOLD}返回{C_RESET}")
+        print(f"   {C_DIM}返回主菜单{C_RESET}")
+        print()
+
+        raw = _read_input("请选择操作").strip()
+        if raw == "0":
+            return
+        if raw == "1":
+            self._run_telegram_wizard()
+        elif raw == "2":
+            self._run_telegram_chatid_only()
+
+    def _run_telegram_chatid_only(self) -> None:
+        """仅修改 Chat ID"""
+        _clear_screen()
+        _print_header("修改 Telegram Chat ID")
+
+        token = self._config.telegram.bot_token
+        print(f"  当前 Token: {C_DIM}{token[:8]}****{C_RESET}")
+        print()
+
+        print(f"  {C_BOLD}【第 1 步】获取你的 Chat ID{C_RESET}")
+        print("    1. 在 Telegram 搜索 @userinfobot")
+        print("    2. 给它发任意消息，得到 User ID")
+        print()
+
+        while True:
+            raw = _read_input("请输入你的 Chat ID（纯数字，直接按 Enter 取消）").strip()
+            if not raw:
+                print(f"  {C_DIM}已取消{C_RESET}")
+                _read_input("按 Enter 返回")
+                return
+            if raw.isdigit():
+                break
+            _print_error("Chat ID 应为纯数字")
+        chat_id = int(raw)
+
+        extra = _read_input("输入额外的操作员 Chat ID（可选，直接按 Enter 跳过）").strip()
+        extra_ids = []
+        if extra:
+            for eid in extra.split(","):
+                eid = eid.strip()
+                if eid.isdigit():
+                    extra_ids.append(int(eid))
+
+        print()
+        _print_info("正在测试连接...")
+        try:
+            resp = httpx.post(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                json={"chat_id": chat_id, "text": "✅ f2b-manager Chat ID 已更新"},
+                timeout=10,
+            )
+            if resp.status_code == 200 and resp.json().get("ok"):
+                _print_success("连接测试成功")
+            else:
+                _print_warning("测试消息发送失败，但配置仍会保存")
+        except Exception as e:
+            _print_warning(f"测试失败: {e}")
+
+        print()
+        _print_info("正在保存...")
+        from .config import save_config
+        self._config.telegram.admin_chat_ids = [chat_id] + extra_ids
+        self._config.telegram.notify_chat_id = chat_id
+        if extra_ids:
+            self._config.telegram.operator_chat_ids = extra_ids
+        save_config(self._config, self._config_path)
+        _print_success("Chat ID 已更新")
+
+        print()
+        _print_info("需要重启服务才能生效")
+        if _confirm("是否立即重启 f2b-manager 服务？"):
+            r = subprocess.run(["systemctl", "restart", "f2b-manager"], capture_output=True)
+            if r.returncode == 0:
+                _print_success("服务已重启")
+            else:
+                _print_warning("重启失败，请手动执行")
+
+        print()
+        _read_input("按 Enter 返回主菜单")
+
+    def _run_telegram_wizard(self) -> None:
+        """运行完整配置向导"""
+        _clear_screen()
+        _print_header("配置 Telegram Bot 通知")
         print("  本向导将引导你完成 Telegram Bot 配置，无需手动编辑文件。")
+        print(f"  {C_DIM}(直接按 Enter 可随时退出当前步骤){C_RESET}")
         print()
         print(f"  {C_BOLD}【第 1 步】创建 Bot{C_RESET}")
         print("    1. 打开 Telegram，搜索 @BotFather")
@@ -906,12 +1039,19 @@ class InteractiveMenu:
         print("    3. 复制返回的 Bot Token（格式如 123456789:ABCdef...）")
         print()
 
+        # 若已有 token，预填并允许直接回车跳过
+        existing = self._config.telegram.bot_token
+        if existing:
+            existing_masked = existing[:8] + "****" if len(existing) > 16 else ""
+            print(f"  {C_DIM}当前 Token: {existing_masked}{C_RESET}")
+            print()
+
         while True:
             token = _read_input("请输入 Bot Token（格式: 数字:字母数字串）").strip()
             if not token:
-                _print_error("Token 不能为空")
-                continue
-            # 校验格式
+                print(f"  {C_DIM}已取消{C_RESET}")
+                _read_input("按 Enter 返回")
+                return
             if re.match(r"^\d+:[A-Za-z0-9_-]+$", token):
                 break
             _print_error("Token 格式不正确，应为 数字:字母数字串")
@@ -927,8 +1067,9 @@ class InteractiveMenu:
         while True:
             chat_id_raw = _read_input("请输入你的 Telegram Chat ID（纯数字）").strip()
             if not chat_id_raw:
-                _print_error("Chat ID 不能为空")
-                continue
+                print(f"  {C_DIM}已取消{C_RESET}")
+                _read_input("按 Enter 返回")
+                return
             if chat_id_raw.isdigit():
                 break
             _print_error("Chat ID 应为纯数字")

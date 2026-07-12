@@ -296,6 +296,9 @@ class InteractiveMenu:
             if raw_upper == "U":
                 self._menu_update_manager()
                 continue
+            if raw_upper == "D":
+                self._menu_uninstall_manager()
+                continue
 
             try:
                 idx = int(raw) - 1  # 1-based → 0-based
@@ -304,7 +307,7 @@ class InteractiveMenu:
                 _read_input("按 Enter 继续")
                 continue
             if idx < 0 or idx > 8:
-                _print_error("请输入 0-9 之间的数字，或 U 更新 f2b-manager")
+                _print_error("请输入 0-9 之间的数字，或 U 更新 / D 卸载 f2b-manager")
                 _read_input("按 Enter 继续")
                 continue
 
@@ -430,6 +433,7 @@ class InteractiveMenu:
             ("8", "启动 / 停止 / 重启服务", "管理 f2b-manager 和 fail2ban 服务"),
             ("9", "查看日志", "查看最近的运行日志"),
             ("U", "更新 f2b-manager", "更新管理程序到最新版本"),
+            ("D", "卸载 f2b-manager", "移除管理程序和所有组件"),
             ("0", "退出", "退出管理菜单"),
         ]
         for num, title, desc in menu_items:
@@ -629,6 +633,102 @@ class InteractiveMenu:
         print(f"  {C_GREEN}更新完成！下次打开菜单将显示新版本号。{C_RESET}")
         print()
         _read_input("按 Enter 返回主菜单")
+
+    # ── D. 卸载 f2b-manager ──────────────────────
+
+    def _menu_uninstall_manager(self) -> None:
+        """卸载 f2b-manager 自身"""
+        _clear_screen()
+        _print_header("卸载 f2b-manager")
+
+        print(f"  {C_YELLOW}{C_BOLD}⚠️  警告：此操作将移除 f2b-manager 及其所有组件{C_RESET}")
+        print()
+        print(f"  将删除以下内容：")
+        print(f"    • /opt/f2b-manager/  (程序文件)")
+        print(f"    • /etc/f2b-manager/  (配置文件)")
+        print(f"    • /usr/local/bin/f2b-manager (CLI)")
+        print(f"    • /usr/local/bin/f2b (快捷指令)")
+        print(f"    • /usr/local/bin/f2b-notify.sh (通知脚本)")
+        print(f"    • systemd 服务")
+        print(f"    • /var/lib/f2b-manager/ (数据库)")
+        print()
+        print(f"  {C_GREEN}以下内容不受影响：{C_RESET}")
+        print(f"    • fail2ban 及其配置")
+        print(f"    • Telegram Bot（需在 BotFather 手动删除）")
+        print()
+
+        if not _confirm("确定要卸载 f2b-manager 吗？此操作不可逆！"):
+            print(f"  {C_DIM}已取消{C_RESET}")
+            _read_input("按 Enter 返回主菜单")
+            return
+
+        # 二次确认
+        if not _confirm("再次确认：你真的要卸载 f2b-manager 吗？"):
+            print(f"  {C_DIM}已取消{C_RESET}")
+            _read_input("按 Enter 返回主菜单")
+            return
+
+        print()
+        _print_info("正在卸载 f2b-manager...")
+
+        errors = []
+
+        # 1. 停止并禁用服务
+        for svc in ["f2b-manager"]:
+            r = subprocess.run(["systemctl", "stop", svc], capture_output=True, text=True)
+            r2 = subprocess.run(["systemctl", "disable", svc], capture_output=True, text=True)
+            if r.returncode == 0 or "not loaded" in r.stderr.lower():
+                _print_success(f"服务 {svc} 已停止并禁用")
+            else:
+                errors.append(f"停止 {svc}: {r.stderr.strip()}")
+
+        # 2. 删除 systemd 文件
+        svc_file = "/etc/systemd/system/f2b-manager.service"
+        if os.path.exists(svc_file):
+            os.remove(svc_file)
+            subprocess.run(["systemctl", "daemon-reload"], capture_output=True)
+            _print_success("systemd 服务文件已删除")
+
+        # 3. 删除可执行文件和快捷指令
+        for f in ["/usr/local/bin/f2b-manager", "/usr/local/bin/f2b-notify.sh"]:
+            if os.path.lexists(f):
+                os.remove(f)
+                _print_success(f"已删除: {f}")
+        # f2b 是 symlink
+        if os.path.lexists("/usr/local/bin/f2b"):
+            os.remove("/usr/local/bin/f2b")
+            _print_success("已删除: /usr/local/bin/f2b")
+
+        # 4. 删除程序目录
+        import shutil
+        for d in ["/opt/f2b-manager", "/var/lib/f2b-manager"]:
+            if os.path.isdir(d):
+                shutil.rmtree(d)
+                _print_success(f"已删除: {d}")
+
+        # 5. 询问是否保留配置
+        if os.path.isdir("/etc/f2b-manager"):
+            if _confirm("是否保留配置文件 /etc/f2b-manager/？（方便以后重新安装）"):
+                print(f"  {C_DIM}配置文件已保留在 /etc/f2b-manager/{C_RESET}")
+            else:
+                shutil.rmtree("/etc/f2b-manager")
+                _print_success("配置文件已删除")
+
+        # 6. 清理版本缓存
+        if os.path.exists(_VERSION_CACHE):
+            os.remove(_VERSION_CACHE)
+
+        print()
+        if errors:
+            _print_warning(f"卸载过程中有 {len(errors)} 个警告")
+            for e in errors:
+                print(f"    {C_DIM}• {e}{C_RESET}")
+        else:
+            _print_success("f2b-manager 已完全卸载！")
+
+        print()
+        print(f"  {C_GREEN}感谢使用 f2b-manager！{C_RESET}")
+        print()
 
     # ── 4. 配置 Telegram Bot ─────────────────────
 

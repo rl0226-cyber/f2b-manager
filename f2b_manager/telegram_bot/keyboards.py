@@ -52,6 +52,81 @@ def confirm_keyboard(
     return InlineKeyboardMarkup(keyboard)
 
 
+# ── Fail2ban 参数配置键盘 ────────────────────
+
+# 回调数据前缀
+CB_F2BCFG = "f2bcfg"
+
+# 预设值
+BANTIME_PRESETS = ["10m", "30m", "1h", "2h", "6h", "12h", "1d", "7d"]
+FINDTIME_PRESETS = ["5m", "10m", "30m", "1h", "2h"]
+MAXRETRY_PRESETS = ["2", "3", "5", "10", "20"]
+MAX_BANTIME_PRESETS = ["1h", "12h", "1d", "3d", "1w", "2w", "1M"]
+
+
+def f2bconfig_main_keyboard(
+    bantime: str, findtime: str, maxretry: int,
+    incremental: bool, max_bantime: str,
+) -> InlineKeyboardMarkup:
+    """fail2ban 配置主面板"""
+    inc_text = "✅ 递增封禁: 开" if incremental else "❌ 递增封禁: 关"
+    keyboard = [
+        [InlineKeyboardButton(
+            f"⏱ 封禁时长: {bantime}", callback_data=f"{CB_F2BCFG}_bantime"
+        )],
+        [InlineKeyboardButton(
+            f"🔍 检测窗口: {findtime}", callback_data=f"{CB_F2BCFG}_findtime"
+        )],
+        [InlineKeyboardButton(
+            f"🔢 最大重试: {maxretry}次", callback_data=f"{CB_F2BCFG}_maxretry"
+        )],
+        [InlineKeyboardButton(
+            inc_text, callback_data=f"{CB_F2BCFG}_tog_inc"
+        )],
+        [InlineKeyboardButton(
+            f"📈 最大封禁: {max_bantime}", callback_data=f"{CB_F2BCFG}_maxbt"
+        )],
+        [
+            InlineKeyboardButton(
+                "🔄 应用并重载 fail2ban", callback_data=f"{CB_F2BCFG}_apply"
+            ),
+        ],
+        [
+            InlineKeyboardButton("✖ 关闭", callback_data=f"{CB_F2BCFG}_del"),
+        ],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+def f2bconfig_preset_keyboard(
+    target: str, presets: list[str], current: str
+) -> InlineKeyboardMarkup:
+    """预设值选择键盘
+
+    Args:
+        target: 参数名 (bantime/findtime/maxretry/maxbt)
+        presets: 预设值列表
+        current: 当前值，用于高亮
+    """
+    keyboard = []
+    row = []
+    for val in presets:
+        label = f"● {val}" if val == current else val
+        row.append(InlineKeyboardButton(
+            label, callback_data=f"{CB_F2BCFG}_set_{target}:{val}"
+        ))
+        if len(row) == 3:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+    keyboard.append([
+        InlineKeyboardButton("↩ 返回", callback_data=f"{CB_F2BCFG}_main"),
+        InlineKeyboardButton("✖ 关闭", callback_data=f"{CB_F2BCFG}_del"),
+    ])
+    return InlineKeyboardMarkup(keyboard)
+
+
 # ── 定时报告设置键盘 ──────────────────────────
 
 # 回调数据前缀

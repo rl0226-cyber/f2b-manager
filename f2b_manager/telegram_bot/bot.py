@@ -39,7 +39,7 @@ from .auth import AuthManager
 from .deps import BotDeps
 from .formatters import format_error, format_help, format_welcome
 from .handlers.ban import cmd_ban, cmd_unban
-from .handlers.config import cmd_setnotify, cmd_setschedule, cmd_whitelist, handle_schedule_callback
+from .handlers.config import cmd_setnotify, cmd_setschedule, cmd_whitelist, handle_schedule_callback, cmd_f2bconfig, handle_f2bconfig_callback
 from .handlers.manage import (
     cmd_cancel,
     cmd_install,
@@ -158,14 +158,16 @@ class F2BTelegramBot(IMessageSender):
         app.add_handler(CommandHandler("whitelist", cmd_whitelist))
         app.add_handler(CommandHandler("setnotify", cmd_setnotify))
         app.add_handler(CommandHandler("setschedule", cmd_setschedule))
+        app.add_handler(CommandHandler("f2bconfig", cmd_f2bconfig))
 
         # 回调处理器
         app.add_handler(CallbackQueryHandler(handle_schedule_callback, pattern=r"^sch_"))
+        app.add_handler(CallbackQueryHandler(handle_f2bconfig_callback, pattern=r"^f2bcfg_"))
 
         # ── 全局错误处理 ──
         app.add_error_handler(self.error_handler)
 
-        logger.info("已注册 17 条命令 handler")
+        logger.info("已注册 18 条命令 handler")
 
     def _register_deps(self) -> None:
         """将 BotDeps 注入 Application.bot_data"""
@@ -320,6 +322,7 @@ class F2BTelegramBot(IMessageSender):
             BotCommand("whitelist", "白名单管理"),
             BotCommand("setnotify", "开关通知"),
             BotCommand("setschedule", "设置定时报告"),
+            BotCommand("f2bconfig", "Fail2ban 参数配置"),
             BotCommand("install", "安装 Fail2ban"),
             BotCommand("uninstall", "卸载 Fail2ban"),
             BotCommand("update", "更新 Fail2ban"),

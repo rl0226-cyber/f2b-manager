@@ -243,6 +243,14 @@ def _check_pkg_update(package: str) -> tuple[str, bool]:
     return "", False
 
 
+def _get_override(db, key: str, default: str) -> str:
+    """从 DB 读取覆盖值，不存在则返回默认值"""
+    if db is None:
+        return default
+    val = db.get_config_override(key, "")
+    return val if val else default
+
+
 class InteractiveMenu:
     """交互式管理菜单。
 
@@ -299,6 +307,9 @@ class InteractiveMenu:
             if raw_upper == "D":
                 self._menu_uninstall_manager()
                 continue
+            if raw_upper == "C":
+                self._menu_f2b_config()
+                continue
 
             try:
                 idx = int(raw) - 1  # 1-based → 0-based
@@ -307,7 +318,7 @@ class InteractiveMenu:
                 _read_input("按 Enter 继续")
                 continue
             if idx < 0 or idx > 8:
-                _print_error("请输入 0-9 之间的数字，或 U 更新 / D 卸载 f2b-manager")
+                _print_error("请输入 0-9 之间的数字，或 U/D/C 管理 f2b-manager")
                 _read_input("按 Enter 继续")
                 continue
 
@@ -375,18 +386,6 @@ class InteractiveMenu:
 
         # 2. 检查是否有可用更新（通过包管理器）
         self._f2b_latest, self._f2b_has_update = _check_pkg_update("fail2ban")
-        """延迟初始化 fail2ban 相关模块"""
-        try:
-            from .fail2ban.manager import Fail2banManager
-            self._f2b_manager = Fail2banManager()
-        except ImportError:
-            self._f2b_manager = None
-
-        try:
-            from .fail2ban.installer import Fail2banInstaller
-            self._f2b_installer = Fail2banInstaller(self._config.fail2ban)
-        except ImportError:
-            self._f2b_installer = None
 
     def _show_main_menu(self) -> None:
         """显示主菜单（含版本信息和更新提示）"""
@@ -432,6 +431,7 @@ class InteractiveMenu:
             ("7", "手动封禁 / 解封 IP", "手动添加或移除 IP 封禁"),
             ("8", "启动 / 停止 / 重启服务", "管理 f2b-manager 和 fail2ban 服务"),
             ("9", "查看日志", "查看最近的运行日志"),
+            ("C", "fail2ban 参数配置", "调整封禁时长、检测窗口、重试次数等"),
             ("U", "更新 f2b-manager", "更新管理程序到最新版本"),
             ("D", "卸载 f2b-manager", "移除管理程序和所有组件"),
             ("0", "退出", "退出管理菜单"),
@@ -729,6 +729,168 @@ class InteractiveMenu:
         print()
         print(f"  {C_GREEN}感谢使用 f2b-manager！{C_RESET}")
         print()
+
+    # ── C. Fail2ban 参数配置 ──────────────────────
+
+    def _menu_f2b_config(self) -> None:
+        """fail2ban 参数配置子菜单"""
+        _clear_screen()
+        while True:
+            _print_header("Fail2ban 参数配置")
+
+            # 读取当前配置
+            cfg = self._config.fail2ban
+            db = None
+            try:
+                from .storage.database import StateDB
+                db = StateDB()
+            except Exception:
+                pass
+
+            bantime = _get_override(db, "f2b_bantime", cfg.default_bantime)
+            findtime = _get_override(db, "f2b_findtime", cfg.default_findtime)
+            maxretry = int(_get_override(db, "f2b_maxretry", str(cfg.default_maxretry)))
+            incremental = _get_override(db, "f2b_incremental", "on" if cfg.incremental else "off") == "on"
+            max_bantime = _get_override(db, "f2b_max_bantime", cfg.max_bantime)
+
+            inc_icon = "✅" if incremental else "❌"
+            print(f"  ⏱ 封禁时长: {C_GREEN}{bantime}{C_RESET}")
+            print(f"  🔍 检测窗口: {C_GREEN}{findtime}{C_RESET}")
+            print(f"  🔢 最大重试: {C_GREEN}{maxretry}次{C_RESET}")
+            print(f"  {inc_icon} 递增封禁: {'开启' if incremental else '关闭'}")
+            print(f"  📈 最大封禁: {C_GREEN}{max_bantime}{C_RESET}")
+            print()
+
+            print(f"  {C_BOLD}{C_GREEN}[1]{C_RESET} {C_BOLD}修改封禁时长{C_RESET}")
+            print(f"   {C_DIM}当前: {bantime}，预设: 10m, 30m, 1h, 2h, 6h, 12h, 1d, 7d{C_RESET}")
+            print(f"  {C_BOLD}{C_GREEN}[2]{C_RESET} {C_BOLD}修改检测窗口{C_RESET}")
+            print(f"   {C_DIM}当前: {findtime}，预设: 5m, 10m, 30m, 1h, 2h{C_RESET}")
+            print(f"  {C_BOLD}{C_GREEN}[3]{C_RESET} {C_BOLD}修改最大重试{C_RESET}")
+            print(f"   {C_DIM}当前: {maxretry}次，预设: 2, 3, 5, 10, 20{C_RESET}")
+            print(f"  {C_BOLD}{C_GREEN}[4]{C_RESET} {C_BOLD}开关递增封禁{C_RESET}")
+            print(f"   {C_DIM}当前: {'开启' if incremental else '关闭'}{C_RESET}")
+            print(f"  {C_BOLD}{C_GREEN}[5]{C_RESET} {C_BOLD}修改最大封禁时长{C_RESET}")
+            print(f"   {C_DIM}当前: {max_bantime}，预设: 1h, 12h, 1d, 3d, 1w, 2w, 1M{C_RESET}")
+            print(f"  {C_BOLD}{C_GREEN}[A]{C_RESET} {C_BOLD}应用配置并重载 fail2ban{C_RESET}")
+            print(f"   {C_DIM}重新生成 jail.local 并执行 fail2ban-client reload{C_RESET}")
+            print(f"  {C_BOLD}{C_GREEN}[0]{C_RESET} {C_BOLD}返回{C_RESET}")
+            print(f"   {C_DIM}返回主菜单{C_RESET}")
+            print()
+
+            # 读取选择
+            raw = _read_input("请选择操作").strip()
+            if raw == "0":
+                break
+
+            raw_upper = raw.upper()
+            if raw_upper == "A":
+                self._apply_f2b_cfg()
+                _read_input("按 Enter 继续")
+                continue
+
+            try:
+                idx = int(raw) - 1
+            except ValueError:
+                _print_error("请输入有效数字")
+                _read_input("按 Enter 继续")
+                continue
+
+            if idx < 0 or idx > 4:
+                _print_error("请输入 1-5 或 A")
+                _read_input("按 Enter 继续")
+                continue
+
+            if db is None:
+                _print_error("状态库未加载，无法保存设置")
+                _read_input("按 Enter 继续")
+                continue
+
+            presets_map = {
+                0: ("f2b_bantime", ["10m", "30m", "1h", "2h", "6h", "12h", "1d", "7d"], "封禁时长"),
+                1: ("f2b_findtime", ["5m", "10m", "30m", "1h", "2h"], "检测窗口"),
+                2: ("f2b_maxretry", ["2", "3", "5", "10", "20"], "最大重试次数"),
+                3: None,  # 切换，特殊处理
+                4: ("f2b_max_bantime", ["1h", "12h", "1d", "3d", "1w", "2w", "1M"], "最大封禁时长"),
+            }
+
+            if idx == 3:
+                # 切换递增封禁
+                new_val = "off" if incremental else "on"
+                db.set_config_override("f2b_incremental", new_val)
+                _print_success(f"递增封禁已{'开启' if new_val == 'on' else '关闭'}")
+                _read_input("按 Enter 继续")
+                continue
+
+            entry = presets_map[idx]
+            if entry is None:
+                continue
+            dbkey, presets, label = entry
+
+            # 确定当前值
+            current_vals = {0: bantime, 1: findtime, 2: str(maxretry), 4: max_bantime}
+            current_val = str(current_vals[idx])
+
+            # 显示预设值选择
+            print()
+            print(f"  {C_BOLD}选择{label}:{C_RESET}")
+            for i, val in enumerate(presets, 1):
+                marker = f" {C_GREEN}(当前){C_RESET}" if str(val) == current_val else ""
+                print(f"  {C_BOLD}{C_GREEN}[{i}]{C_RESET} {val}{marker}")
+            print()
+
+            choice = _read_choice("请选择", [str(i) for i in range(1, len(presets) + 1)], default=0)
+            if 0 <= choice < len(presets):
+                val = presets[choice]
+                db.set_config_override(dbkey, val)
+                _print_success(f"{label}已设为 {val}")
+
+            _read_input("按 Enter 继续")
+
+
+    def _apply_f2b_cfg(self) -> None:
+        """重新生成 jail.local 并重载 fail2ban"""
+        if self._f2b_installer is None:
+            _print_error("安装器未就绪")
+            return
+
+        try:
+            # 从 DB 读取覆盖值并更新 config 对象
+            db = None
+            try:
+                from .storage.database import StateDB
+                db = StateDB()
+            except Exception:
+                pass
+
+            fc = self._config.fail2ban
+            if db is not None:
+                for key, dbkey in [
+                    ("default_bantime", "f2b_bantime"),
+                    ("default_findtime", "f2b_findtime"),
+                    ("default_maxretry", "f2b_maxretry"),
+                    ("max_bantime", "f2b_max_bantime"),
+                ]:
+                    val = db.get_config_override(dbkey, "")
+                    if val:
+                        if key == "default_maxretry":
+                            setattr(fc, key, int(val))
+                        else:
+                            setattr(fc, key, val)
+                inc = db.get_config_override("f2b_incremental", "")
+                if inc:
+                    fc.incremental = inc == "on"
+
+            jail_content = self._f2b_installer._builder.generate_jail_local()
+            with open("/etc/fail2ban/jail.local", "w") as f:
+                f.write(jail_content)
+            _print_success("jail.local 已重新生成")
+
+            if self._f2b_manager is not None:
+                self._f2b_manager.reload()
+                _print_success("fail2ban 已重载")
+        except Exception as e:
+            _print_error(f"应用配置失败: {e}")
+
 
     # ── 4. 配置 Telegram Bot ─────────────────────
 

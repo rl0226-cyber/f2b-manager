@@ -26,8 +26,11 @@ from ..auth import require_admin, require_operator
 from ..deps import get_deps
 from ..formatters import esc, format_error, format_success
 from ..keyboards import (
-    CB_SCHEDULE, WEEKDAY_MAP,
+    CB_SCHEDULE, CB_F2BCFG, WEEKDAY_MAP,
+    BANTIME_PRESETS, FINDTIME_PRESETS,
+    MAXRETRY_PRESETS, MAX_BANTIME_PRESETS,
     schedule_main_keyboard, schedule_time_keyboard, schedule_weekday_keyboard,
+    f2bconfig_main_keyboard, f2bconfig_preset_keyboard,
 )
 
 logger = logging.getLogger(__name__)
@@ -40,6 +43,13 @@ KEY_SCHEDULE_DAILY_ENABLED = "schedule_daily_enabled"
 KEY_SCHEDULE_WEEKLY_TIME = "schedule_weekly_time"
 KEY_SCHEDULE_WEEKLY_DAY = "schedule_weekly_day"
 KEY_SCHEDULE_WEEKLY_ENABLED = "schedule_weekly_enabled"
+
+# Fail2ban 参数配置覆盖键名
+KEY_F2B_BANTIME = "f2b_bantime"
+KEY_F2B_FINDTIME = "f2b_findtime"
+KEY_F2B_MAXRETRY = "f2b_maxretry"
+KEY_F2B_INCREMENTAL = "f2b_incremental"
+KEY_F2B_MAX_BANTIME = "f2b_max_bantime"
 
 VALID_DAYS = [
     "monday", "tuesday", "wednesday", "thursday",
@@ -448,3 +458,213 @@ def _validate_time(time_str: str) -> bool:
         return 0 <= h <= 23 and 0 <= m <= 59
     except (ValueError, IndexError):
         return False
+
+
+# ──────────────────────────────────────────────
+# /f2bconfig — Fail2ban 参数配置面板
+# ──────────────────────────────────────────────
+
+@require_admin
+async def cmd_f2bconfig(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/f2bconfig — fail2ban 参数配置面板"""
+    await _show_f2bconfig_panel(update, context)
+
+
+async def handle_f2bconfig_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """处理 fail2ban 配置的所有按钮回调"""
+    query = update.callback_query
+    await query.answer()
+
+    data = query.data or ""
+    deps = get_deps(context)
+
+    if not data.startswith(CB_F2BCFG):
+        return
+
+    action = data[len(CB_F2BCFG) + 1:]  # 去掉 "f2bcfg_"
+
+    if action == "del":
+        await query.delete_message()
+        return
+
+    if action == "main":
+        await _refresh_f2bconfig(query, deps)
+        return
+
+    if action == "tog_inc":
+        await _toggle_incremental(query, deps)
+        return
+
+    if action == "apply":
+        await _apply_f2b_config(query, deps)
+        return
+
+    # 打开预设值面板: f2bcfg_bantime / f2bcfg_findtime / f2bcfg_maxretry / f2bcfg_maxbt
+    if action in ("bantime", "findtime", "maxretry", "maxbt"):
+        presets_map = {
+            "bantime": (BANTIME_PRESETS, "封禁时长"),
+            "findtime": (FINDTIME_PRESETS, "检测窗口"),
+            "maxretry": (MAXRETRY_PRESETS, "最大重试次数"),
+            "maxbt": (MAX_BANTIME_PRESETS, "最大封禁时长"),
+        }
+        presets, label = presets_map[action]
+        cfg = _read_f2b_config(deps)
+        # 映射 action → config key
+        key_map = {
+            "bantime": cfg["bantime"], "findtime": cfg["findtime"],
+            "maxretry": str(cfg["maxretry"]), "maxbt": cfg["max_bantime"],
+        }
+        text = f"⚙️ <b>选择{label}</b>"
+        keyboard = f2bconfig_preset_keyboard(action, presets, key_map[action])
+        await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
+        return
+
+    # 设置值: f2bcfg_set_bantime:1h
+    if action.startswith("set_"):
+        rest = action[4:]  # "bantime:1h"
+        target, _, val = rest.partition(":")
+        await _set_f2b_param(query, deps, target, val)
+        return
+
+
+def _read_f2b_config(deps) -> dict:
+    """读取当前 fail2ban 配置（含 DB 覆盖）"""
+    cfg = deps.config.fail2ban
+    result = {
+        "bantime": cfg.default_bantime,
+        "findtime": cfg.default_findtime,
+        "maxretry": cfg.default_maxretry,
+        "incremental": cfg.incremental,
+        "max_bantime": cfg.max_bantime,
+    }
+    if deps.db is not None:
+        for key, dbkey in [
+            ("bantime", KEY_F2B_BANTIME), ("findtime", KEY_F2B_FINDTIME),
+            ("maxretry", KEY_F2B_MAXRETRY), ("max_bantime", KEY_F2B_MAX_BANTIME),
+        ]:
+            val = deps.db.get_config_override(dbkey, "")
+            if val:
+                result[key] = val
+        inc = deps.db.get_config_override(KEY_F2B_INCREMENTAL, "")
+        if inc:
+            result["incremental"] = inc == "on"
+    # maxretry 返回 int
+    result["maxretry"] = int(result["maxretry"])
+    return result
+
+
+async def _show_f2bconfig_panel(update, context, from_callback: bool = False) -> None:
+    """显示 fail2ban 配置面板"""
+    deps = get_deps(context)
+    cfg = _read_f2b_config(deps)
+
+    lines = ["⚙️ <b>Fail2ban 参数配置</b>", ""]
+    lines.append(f"⏱ 封禁时长: <code>{cfg['bantime']}</code>")
+    lines.append(f"🔍 检测窗口: <code>{cfg['findtime']}</code>")
+    lines.append(f"🔢 最大重试: <code>{cfg['maxretry']}次</code>")
+    lines.append(f"{'✅' if cfg['incremental'] else '❌'} 递增封禁: {'开启' if cfg['incremental'] else '关闭'}")
+    lines.append(f"📈 最大封禁: <code>{cfg['max_bantime']}</code>")
+
+    text = "\n".join(lines)
+    keyboard = f2bconfig_main_keyboard(
+        bantime=cfg["bantime"],
+        findtime=cfg["findtime"],
+        maxretry=cfg["maxretry"],
+        incremental=cfg["incremental"],
+        max_bantime=cfg["max_bantime"],
+    )
+
+    if from_callback:
+        query = update.callback_query
+        await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
+    else:
+        await update.message.reply_text(text, reply_markup=keyboard, parse_mode="HTML")
+
+
+async def _refresh_f2bconfig(query, deps) -> None:
+    """刷新配置面板"""
+    cfg = _read_f2b_config(deps)
+    lines = ["⚙️ <b>Fail2ban 参数配置</b>", ""]
+    lines.append(f"⏱ 封禁时长: <code>{cfg['bantime']}</code>")
+    lines.append(f"🔍 检测窗口: <code>{cfg['findtime']}</code>")
+    lines.append(f"🔢 最大重试: <code>{cfg['maxretry']}次</code>")
+    lines.append(f"{'✅' if cfg['incremental'] else '❌'} 递增封禁: {'开启' if cfg['incremental'] else '关闭'}")
+    lines.append(f"📈 最大封禁: <code>{cfg['max_bantime']}</code>")
+
+    text = "\n".join(lines)
+    keyboard = f2bconfig_main_keyboard(
+        bantime=cfg["bantime"],
+        findtime=cfg["findtime"],
+        maxretry=cfg["maxretry"],
+        incremental=cfg["incremental"],
+        max_bantime=cfg["max_bantime"],
+    )
+    await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
+
+
+async def _set_f2b_param(query, deps, target: str, val: str) -> None:
+    """设置单个 fail2ban 参数"""
+    if deps.db is None:
+        await query.answer("状态库未加载", show_alert=True)
+        return
+
+    key_map = {
+        "bantime": (KEY_F2B_BANTIME, "封禁时长"),
+        "findtime": (KEY_F2B_FINDTIME, "检测窗口"),
+        "maxretry": (KEY_F2B_MAXRETRY, "最大重试次数"),
+        "maxbt": (KEY_F2B_MAX_BANTIME, "最大封禁时长"),
+    }
+
+    if target not in key_map:
+        await query.answer(f"未知参数: {target}", show_alert=True)
+        return
+
+    dbkey, label = key_map[target]
+    deps.db.set_config_override(dbkey, val)
+    await query.answer(f"{label}已设为 {val}")
+    await _refresh_f2bconfig(query, deps)
+
+
+async def _toggle_incremental(query, deps) -> None:
+    """切换递增封禁开关"""
+    if deps.db is None:
+        await query.answer("状态库未加载", show_alert=True)
+        return
+
+    cfg = _read_f2b_config(deps)
+    new_val = "off" if cfg["incremental"] else "on"
+    deps.db.set_config_override(KEY_F2B_INCREMENTAL, new_val)
+    await query.answer(f"递增封禁已{'开启' if new_val == 'on' else '关闭'}")
+    await _refresh_f2bconfig(query, deps)
+
+
+async def _apply_f2b_config(query, deps) -> None:
+    """应用配置：重新生成 jail.local 并重载 fail2ban"""
+    if deps.f2b_manager is None:
+        await query.answer("Fail2ban 管理模块未就绪", show_alert=True)
+        return
+
+    cfg = _read_f2b_config(deps)
+    try:
+        # 用 installer 的 config_builder 重新生成 jail.local
+        installer = deps.get_installer()
+        if installer is not None and hasattr(installer, "_builder"):
+            # 更新 builder 中的 config 属性以反映 DB 覆盖值
+            builder = installer._builder
+            builder._config.default_bantime = cfg["bantime"]
+            builder._config.default_findtime = cfg["findtime"]
+            builder._config.default_maxretry = cfg["maxretry"]
+            builder._config.incremental = cfg["incremental"]
+            builder._config.max_bantime = cfg["max_bantime"]
+
+            jail_content = builder.generate_jail_local()
+            with open("/etc/fail2ban/jail.local", "w") as f:
+                f.write(jail_content)
+            # 重载 fail2ban
+            deps.f2b_manager.reload()
+            await query.answer("配置已应用，fail2ban 已重载", show_alert=True)
+        else:
+            await query.answer("安装器未就绪，无法生成配置", show_alert=True)
+    except Exception as e:
+        logger.error("应用 fail2ban 配置失败: %s", e)
+        await query.answer(f"应用失败: {e}", show_alert=True)

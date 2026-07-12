@@ -732,6 +732,8 @@ class InteractiveMenu:
         print(f"  {C_GREEN}感谢使用 f2b-manager！{C_RESET}")
         print()
 
+        sys.exit(0)
+
     # ── C. Fail2ban 参数配置 ──────────────────────
 
     def _menu_f2b_config(self) -> None:
